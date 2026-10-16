@@ -1,3 +1,6 @@
+## 🎮 Demonstração
+
+![Emulador PS1 em funcionamento](gameplay.png)
 PS1 Emu (JS) - CPU + GPU + SPU + DMA + Timers + SIO0 + CD-ROM
 
 COMO USAR
