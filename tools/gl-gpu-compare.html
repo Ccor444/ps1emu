@@ -1,0 +1,114 @@
+<!doctype html><meta charset=utf-8><canvas id=c width=320 height=240></canvas>
+<script src="/dist/ps1emu.js"></script>
+<script>
+function rng(seed){ let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+const XY = (x, y) => ((y & 0x7FF) << 16) | (x & 0x7FF);
+function genProgram(cls, R) {
+  const ri = n => Math.floor(R() * n), W = [];
+  const col = () => (ri(256) | (ri(256) << 8) | (ri(256) << 16)) >>> 0;
+  const state = (o = {}) => {
+    const tx = ri(4), ty = ri(2), semi = o.semi ?? ri(4), depth = o.depth ?? ri(3);
+    return { tx, ty, semi, depth, e1: (tx | (ty << 4) | (semi << 5) | (depth << 7) | ((o.dither ? 1 : 0) << 9) | ((o.flipX ? 1 : 0) << 12) | ((o.flipY ? 1 : 0) << 13)) >>> 0 };
+  };
+  // texturas aleatórias + CLUTs na VRAM (x 0..320, y 0..512): bloco grande de dados
+  for (const [x, y, w, h] of [[0, 0, 256, 256], [256, 0, 256, 256], [0, 256, 256, 8], [0, 300, 256, 8]]) {
+    W.push((0xA0 << 24) >>> 0, XY(x, y), XY(w, h));
+    for (let i = 0; i < (w * h) / 2; i++) { let a = ri(65536), b = ri(65536); if (R() < 0.15) a = 0; if (R() < 0.15) b = 0; if (R() < 0.5) a &= 0x7FFF; W.push((a | (b << 16)) >>> 0); }
+  }
+  W.push((0xE3 << 24) | (10 | (310 << 10))); W.push((0xE4 << 24) | (350 | (500 << 10))); W.push((0xE5 << 24) | (0 | (300 << 11)));
+  const ex = { };
+  if (cls === 'mask') { W.push((0xE6 << 24) | 1); }                       // set mask
+  for (let n = 0; n < 40; n++) {
+    if (cls === 'mask' && n === 12) W.push((0xE6 << 24) | 2);               // check mask
+    if (cls === 'mask' && n === 25) W.push((0xE6 << 24) | 3);               // set + check
+    if (cls === 'window' && n % 4 === 0) W.push((0xE2 << 24) | (ri(4) | (ri(4) << 5) | (ri(8) << 10) | (ri(8) << 15)));
+    const px = () => ri(300) + 10, py = () => ri(150) + 20;
+    const quad = R() < 0.5, nv = quad ? 4 : 3;
+    const bx = px(), by = py(), sz = 10 + ri(70);
+    const V = []; for (let i = 0; i < nv; i++) V.push([bx + ri(sz), by + ri(sz)]);
+    let tex = false, gour = false, semi = false, raw = false, st = state({});
+    switch (cls) {
+      case 'flat': break;
+      case 'gouraud': gour = true; break;
+      case 'dither': gour = true; st = state({ dither: true }); break;
+      case 'tex4': tex = true; st = state({ depth: 0 }); raw = R() < 0.3; gour = R() < 0.3; break;
+      case 'tex8': tex = true; st = state({ depth: 1 }); raw = R() < 0.3; gour = R() < 0.3; break;
+      case 'tex15': tex = true; st = state({ depth: 2 }); raw = R() < 0.3; gour = R() < 0.3; break;
+      case 'semiflat': semi = true; break;
+      case 'semitex': semi = true; tex = true; raw = R() < 0.4; break;
+      case 'window': tex = true; st = state({}); break;
+      case 'mask': tex = R() < 0.5; semi = R() < 0.3; break;
+    }
+    if (cls === 'rect' || cls === 'rectflip' || cls === 'semirect') {
+      tex = R() < 0.8; semi = cls === 'semirect'; raw = R() < 0.3; st = state({ flipX: cls === 'rectflip' && R() < 0.6, flipY: cls === 'rectflip' && R() < 0.6 });
+      W.push((0xE1 << 24) | st.e1);
+      const sizeSel = ri(4), c = (0x60 | (sizeSel << 3) | (tex ? 4 : 0) | (semi ? 2 : 0) | (raw ? 1 : 0)) << 24 >>> 0;
+      W.push((c | col()) >>> 0, XY(px(), py())); if (tex) W.push(((ri(60) | (ri(60) << 8)) | (ri(30) << 16) | (ri(2) ? 0 : 0))); // clut
+      if (sizeSel === 0) W.push(XY(4 + ri(60), 4 + ri(60)));
+      continue;
+    }
+    if (cls === 'line' || cls === 'gline' || cls === 'semiline') {
+      const g = cls === 'gline', s = cls === 'semiline'; W.push((0xE1 << 24) | state({ dither: g }).e1);
+      W.push(((0x40 | (g ? 0x10 : 0) | (s ? 2 : 0)) << 24 | col()) >>> 0, XY(px(), py())); if (g) W.push(col()); W.push(XY(px(), py())); continue;
+    }
+    if (cls === 'fill') { W.push((0x02 << 24) | col(), XY(ri(20) * 16, 320 + ri(20) * 8), XY(16 * (1 + ri(6)), 8 + ri(40))); continue; }
+    if (cls === 'copy') { W.push(((0x80 << 24)) >>> 0, XY(ri(300), ri(300)), XY(ri(300), 330 + ri(100)), XY(8 + ri(80), 8 + ri(60))); continue; }
+    W.push((0xE1 << 24) | st.e1);
+    const cmd = (0x20 | (gour ? 0x10 : 0) | (quad ? 8 : 0) | (tex ? 4 : 0) | (semi ? 2 : 0) | (raw ? 1 : 0)) << 24 >>> 0;
+    const clut = (ri(20) | ((ri(2) ? 300 : 256) << 6)) << 16;
+    for (let i = 0; i < nv; i++) {
+      if (i === 0 || gour) W.push(i === 0 ? ((cmd | col()) >>> 0) : col()); 
+      W.push(XY(V[i][0], V[i][1]));
+      if (tex) { let uv = ri(256) | (ri(256) << 8); if (i === 0) uv |= clut; if (i === 1) uv |= ((st.tx | (st.ty << 4) | (st.semi << 5) | (st.depth << 7)) << 16); W.push(uv >>> 0); }
+    }
+  }
+  return W;
+}
+function preamble(R) {
+  const ri = n => Math.floor(R() * n), W = [];
+  for (const [x, y, w, h] of [[0, 0, 256, 256], [256, 0, 256, 256], [0, 256, 256, 8], [0, 300, 256, 8]]) {
+    W.push((0xA0 << 24) >>> 0, XY(x, y), XY(w, h));
+    for (let i = 0; i < (w * h) / 2; i++) { let a = ri(65536), b = ri(65536); if (R() < 0.15) a = 0; if (R() < 0.15) b = 0; if (R() < 0.5) a &= 0x7FFF; W.push((a | (b << 16)) >>> 0); }
+  }
+  W.push((0xE3 << 24) | (10 | (310 << 10))); W.push((0xE4 << 24) | (350 | (500 << 10))); W.push((0xE5 << 24) | (0 | (300 << 11)));
+  return W;
+}
+window.runWords = async (words, seed = 3) => {
+  const R = rng(seed * 7919 + 13), prog = preamble(R).concat(words);
+  const gs = new PS1.GPU(), gh = new PS1.GPU(); const R2 = rng(seed * 31 + 7);
+  for (let i = 0; i < gs.vram.length; i++) { const v = (R2() * 65536) | 0; gs.vram[i] = v; gh.vram[i] = v; }
+  const canvas = document.createElement('canvas'), r = new PS1.GLRenderer(canvas, 1, {}); r.attach(gh);
+  for (const w of prog) { gs.writeGP0(w); gh.writeGP0(w); }
+  r.syncNative(0, 0, 1024, 512, true);
+  const bad = []; let bx0 = 1e9, by0 = 1e9, bx1 = -1, by1 = -1;
+  for (let y = 300; y < 512; y++) for (let x = 0; x < 400; x++) {
+    const p = gs.vram[y * 1024 + x], q = gh.vram[y * 1024 + x]; if (p === q) continue;
+    const d = Math.max(Math.abs((p & 31) - (q & 31)), Math.abs(((p >> 5) & 31) - ((q >> 5) & 31)), Math.abs(((p >> 10) & 31) - ((q >> 10) & 31)));
+    if ((p & 0x8000) !== (q & 0x8000) || d > 2) { if (bad.length < 6) bad.push([x, y, p.toString(16), q.toString(16)]); bx0 = Math.min(bx0, x); by0 = Math.min(by0, y); bx1 = Math.max(bx1, x); by1 = Math.max(by1, y); }
+  }
+  let n = 0; for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) { const p = gs.vram[y * 1024 + x], q = gh.vram[y * 1024 + x]; if (p !== q) n++; }
+  return { box: [bx0, by0, bx1, by1], n, bad };
+};
+window.runClass = async (cls, seeds) => {
+  const out = [];
+  for (let seed = 1; seed <= seeds; seed++) {
+    const R = rng(seed * 7919 + 13), prog = genProgram(cls, R);
+    const gs = new PS1.GPU(), gh = new PS1.GPU();
+    const R2 = rng(seed * 31 + 7);
+    for (let i = 0; i < gs.vram.length; i++) { const v = (R2() * 65536) | 0; gs.vram[i] = v; gh.vram[i] = v; }
+    const canvas = document.createElement('canvas'), r = new PS1.GLRenderer(canvas, 1, {}); r.attach(gh);
+    for (const w of prog) { gs.writeGP0(w); gh.writeGP0(w); }
+    r.syncNative(0, 0, 1024, 512, true);
+    let bad = 0, tot = 0, ex = null;
+    for (let y = 300; y < 512; y++) for (let x = 0; x < 400; x++) {
+      const p = gs.vram[y * 1024 + x], q = gh.vram[y * 1024 + x]; tot++;
+      if (p === q) continue;
+      const d = Math.max(Math.abs((p & 31) - (q & 31)), Math.abs(((p >> 5) & 31) - ((q >> 5) & 31)), Math.abs(((p >> 10) & 31) - ((q >> 10) & 31)));
+      if ((p & 0x8000) !== (q & 0x8000) || d > 2) { bad++; if (!ex) ex = { x, y, sw: p.toString(16), hw: q.toString(16) }; }
+    }
+    out.push({ seed, bad, ex });
+    r.gl.getExtension('WEBGL_lose_context')?.loseContext();
+  }
+  return out;
+};
+</script>
