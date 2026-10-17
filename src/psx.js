@@ -26,7 +26,7 @@ export class PSX {
   constructor() {
     this.bus = new Bus();
     this.cpu = new CPU(this.bus);
-    this.jit = new JIT(this.cpu, this.bus); this.useJit = true;      // recompilador dinâmico (desligue com psx.useJit = false)
+    this.jit = new JIT(this.cpu, this.bus); this.jit.H.ps = this; this.useJit = true;      // recompilador dinâmico (desligue com psx.useJit = false)
     this.gpu = new GPU();
     this.spu = new SPU();
     this.sched = new Scheduler();
@@ -128,8 +128,8 @@ export class PSX {
     this.lineAcc += dt;
     while (this.lineAcc >= lc) {
       this.lineAcc -= lc; this.line++; gpu.line = this.line; this.timers.hblank();
-      if (this.line === vb) { gpu.vblank = true; this.bus.raiseIrq(0); }          // IRQ0 = VBLANK
-      if (this.line >= lines) { this.line = 0; gpu.line = 0; gpu.vblank = false; gpu.field ^= 1; this.frameDone = true; this.frames++; }
+      if (this.line === vb) { gpu.vblank = true; gpu.field ^= 1; this.bus.raiseIrq(0); }   // o campo entrelaçado muda no início do vblank (os desenhos do jogo depois do IRQ vão todos para o mesmo campo)          // IRQ0 = VBLANK
+      if (this.line >= lines) { this.line = 0; gpu.line = 0; gpu.vblank = false; gpu.captureField(); this.frameDone = true; this.frames++; }
     }
 
     this.sched.run(now);

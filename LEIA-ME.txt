@@ -287,3 +287,66 @@ DESEMPENHO DO NÚCLEO (fase 3c) — foco em celular (Moto G52 ≈ CPU 3–4x mai
   agendado ou fim do "ocupado" da GPU). Não avança se houver IRQ pendente. Ganho medido: ~10-20% nas cenas de luta.
   No núcleo (psx.pollSkip) vem DESLIGADO para os testes de hardware continuarem exatos.
 - Perfil de uma luta (PC de desenvolvimento): CPU/JIT ~60%, rasterizador ~12%, status da GPU/contadores ~10%, SPU/tick ~10%.
+
+=== Pular quadros (frameskip automático) + scanline especializada ===
+- Quando o emulador está atrasado e precisa emular 2-3 quadros de uma vez, só o ÚLTIMO é desenhado (os outros nunca seriam mostrados mesmo).
+  Caixa "Pular quadros" na barra (ligada por padrão). Medido na luta do Tekken 3: 5,6 -> 4,2 ms/quadro (lote de 2) e 3,8 (lote de 3).
+- Rasterizador: scanline gerada sob medida por combinação de modos (textura 4/8/15 bits, gouraud, modulação, semitransparência, dither, máscara).
+  VRAM idêntica bit a bit em 3000 quadros.
+
+=== JIT da CPU v3 (laços internos, chamadas embutidas, cache global) ===
+- j/jal e "jr $ra" com retorno conhecido (sub-rotina folha) são EMBUTIDOS no mesmo bloco: menos voltas ao despachante.
+- Laço para o início do próprio bloco (bne/beq/j para trás): vira "for(;;)" interno com os registradores do MIPS em variáveis locais;
+  sai quando acaba o tempo do tick, há IRQ pendente ou o código é invalidado (código auto-modificável).
+- Cache global direto-mapeado pc -> bloco (16K entradas) antes da busca nas tabelas; despachante sem gravações desnecessárias no COP0.
+- Blocos têm "//# sourceURL=jit_<pc>" (aparecem com o PC no perfilador do Chrome/Node).
+- SPU: FIR do reverb só com os coeficientes não nulos e só quando o reverb está ligado. Leitura de I/O: GPU testada primeiro.
+- Medido (CPU sem desenhar, 3000 quadros do Tekken 3): ~5,0 -> ~4,6 ms/quadro; despachos de bloco -45%.
+- Novo teste test/jit-loops.test.js: 60 programas com laços/chamadas/retorno alterado, JIT == interpretador (registradores, RAM, ciclos, contagem).
+- Num quadro de luta típico a CPU emulada é ~30% do tempo; o rasterizador por software é ~45%.
+
+=== Correção: piscadas com 'Pular quadros' ===
+- Jogos com buffer duplo exibem, no fim do lote, o buffer desenhado no quadro ANTERIOR; desenhar só o último quadro mostrava um buffer velho (piscada).
+  Agora o lote desenha os 2 últimos quadros (teste: 0/150 quadros exibidos errados, antes 5/150). Se ainda piscar, desligue 'Pular quadros' ou 'Pular esperas' na barra para isolar a causa.
+
+----------------------------------------------------------------------
+CORREÇÃO: 480i (entrelaçado) - piscadas e "pausas" no Tekken 3
+----------------------------------------------------------------------
+Causa: o Tekken 3 roda em 368x480 entrelaçado. No hardware real, nesse modo a GPU só desenha as
+linhas do campo que NÃO está sendo exibido (GP0 E1 bit 10 = 0), o que também divide o custo de
+desenho por ~2. O emulador desenhava todas as linhas e cobrava o tempo cheio. Resultado: a GPU
+"levava" mais de 1 quadro por cena, o jogo perdia 1 quadro a cada ~9 (a lógica do jogo andava
+a ~7 passos/s, parecendo travar e continuar) e a imagem era exibida no meio do desenho (piscadas).
+Corrigido (software e WebGL):
+ - gpu.rowMask: em 480i com "desenhar na área de display" proibido, polígonos, retângulos, linhas
+   e fill pulam as linhas do campo exibido (WebGL: discard no shader; fill por shader).
+ - Custo de desenho (GPUSTAT/DMA) pela metade nesse modo.
+ - O campo (GPUSTAT bit 31) agora alterna no início do VBLANK (antes: no fim do quadro).
+ - Saída: no fim de cada quadro guarda as linhas completas do campo exibido (gpu.captureField;
+   no WebGL numa textura de display) e tece com as do campo anterior - nunca mostra linhas
+   em construção.
+ - "Pular quadros": em 480i desenha os 3 últimos quadros do lote (em 240p continuam 2).
+ - Novo teste: test/interlace.test.js.
+Efeito colateral importante: agora o jogo roda no ritmo real (lógica a 60 passos/s), então a CPU
+trabalha de verdade: no teste de luta, ~395 mil instruções/quadro (antes ~50 mil porque o jogo
+ficava esperando a GPU). O "fps" mostrado antes estava inflado por isso.
+
+----------------------------------------------------------------------
+CONTROLE VIRTUAL: sem analógicos, mais leve
+----------------------------------------------------------------------
+- Removidos os analógicos virtuais e o botão ANALOG da tela (mexer neles derrubava o fps). Quem tinha
+  ligado a opção tem a porta 1 devolvida para Digital automaticamente. Gamepad físico continua com
+  analógico/DualShock (menu "Controles").
+- Mais leve: sem desfoque (backdrop-filter) atrás dos botões; zonas de toque medidas uma vez
+  (layout) e testadas por aritmética - nenhuma consulta ao DOM durante o toque; classes visuais só
+  mudam quando o botão muda; direcional com 8 direções por ângulo.
+- Novo: controle "Tamanho do controle" (70-150%) e opção de vibração ao tocar; área de toque dos
+  botões com folga para o dedo (deslizar de um botão para outro e apertar dois ao mesmo tempo funciona).
+
+----------------------------------------------------------------------
+BOTÃO "INICIAR" NO MEIO DA TELA
+----------------------------------------------------------------------
+Ao escolher a BIOS e o jogo, o menu fecha sozinho e aparece um botão grande "Iniciar jogo" (com o
+nome do arquivo) no centro da tela; tocar nele inicia o emulador. Só com a BIOS escolhida (menu
+fechado) o botão vira "Iniciar BIOS" e abre a tela do console. Some ao iniciar. O botão "Iniciar" do
+menu continua existindo.

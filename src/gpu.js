@@ -15,6 +15,45 @@ const LINE_EX = 1 / 4194304, LINE_EY = 0;                  // viés de arredonda
 const DITHER = [-4, 0, -3, 1, 2, -2, 3, -1, -3, 1, -4, 0, 3, -1, 2, -2];
 const sx11 = v => (v << 21) >> 21;                       // sinal 11 bits
 
+
+// ---- scanline especializada (gerada por combinação de modos): mesma aritmética do plotNB/texel, sem ramos por pixel ----
+const QT = new Uint8Array(1024); for (let i = 0; i < 1024; i++) { const v = i - 8; QT[i] = (v < 0 ? 0 : v > 255 ? 255 : v) >> 3; }   // clamp8(v) >> 3, índice v+8
+const DITHER_T = new Int8Array(DITHER);
+const SPANS = new Map();
+function spanFor(tex, td, gour, raw, semi, dd, chk, win) {
+  const key = (tex ? td : 'n') + (gour ? 'G' : 'f') + (raw ? 'R' : 'm') + (semi ? 'S' : 'o') + (dd ? 'D' : 'n') + (chk ? 'C' : '-') + (win ? 'W' : '-');
+  let f = SPANS.get(key); if (f) return f;
+  let c = 'const rowI = y * 1024, dRow = (y & 3) << 2;\nfor (let x = xl; x < xr; x++) {\n';
+  c += gour ? 'let r = ((cr | 0) >> 12) & 255, g = ((cg | 0) >> 12) & 255, bl = ((cb | 0) >> 12) & 255; cr += rGx; cg += gGx; cb += bGx;\n' : 'let r = fr, g = fg, bl = fb;\n';
+  if (tex) {
+    c += win ? 'const u = (((cu | 0) >> 12) & 255 & uAnd) | uOr, v = (((cv | 0) >> 12) & 255 & vAnd) | vOr;\n' : 'const u = ((cu | 0) >> 12) & 255, v = ((cv | 0) >> 12) & 255;\n';
+    c += 'cu += uGx; cv += vGx;\nconst row = ((tY + v) & 0x1FF) << 10;\n';
+    if (td === 0) c += 'const texel = clut[(vram[row + ((tBase + (u >> 2)) & 0x3FF)] >> ((u & 3) << 2)) & 15];\n';
+    else if (td === 1) c += 'const texel = clut[(vram[row + ((tBase + (u >> 1)) & 0x3FF)] >> ((u & 1) << 3)) & 255];\n';
+    else c += 'const texel = vram[row + ((tBase + u) & 0x3FF)];\n';
+    c += 'if (texel === 0) continue;\n';
+    if (semi) c += 'const sm = (texel & 0x8000) !== 0;\n';
+    c += 'const tr = texel & 31, tg = (texel >> 5) & 31, tb = (texel >> 10) & 31;\n';
+    c += raw ? 'r = tr << 3; g = tg << 3; bl = tb << 3;\n' : 'r = (tr * r) >> 4; g = (tg * g) >> 4; bl = (tb * bl) >> 4;\n';
+  }
+  c += 'const idx = rowI + x;\n';
+  if (chk || semi) c += 'const back = vram[idx];\n';
+  if (chk) c += 'if (back & 0x8000) continue;\n';
+  if (dd) c += 'const d = DITHER[dRow | (x & 3)]; r += d; g += d; bl += d;\n';
+  c += 'r = QT[r + 8]; g = QT[g + 8]; bl = QT[bl + 8];\n';
+  if (semi) {
+    const blend = 'const br = back & 31, bg = (back >> 5) & 31, bb = (back >> 10) & 31;\n' +
+      'switch (smode) {\ncase 0: r = (br + r) >> 1; g = (bg + g) >> 1; bl = (bb + bl) >> 1; break;\n' +
+      'case 1: r = br + r > 31 ? 31 : br + r; g = bg + g > 31 ? 31 : bg + g; bl = bb + bl > 31 ? 31 : bb + bl; break;\n' +
+      'case 2: r = br - r < 0 ? 0 : br - r; g = bg - g < 0 ? 0 : bg - g; bl = bb - bl < 0 ? 0 : bb - bl; break;\n' +
+      'default: r = Math.min(31, br + (r >> 2)); g = Math.min(31, bg + (g >> 2)); bl = Math.min(31, bb + (bl >> 2));\n}\n';
+    c += tex ? 'if (sm) {\n' + blend + '}\n' : '{\n' + blend + '}\n';
+  }
+  c += 'vram[idx] = r | (g << 5) | (bl << 10) | setM;\n}';
+  f = new Function('vram', 'clut', 'QT', 'DITHER', 'y', 'xl', 'xr', 'cr', 'cg', 'cb', 'cu', 'cv', 'rGx', 'gGx', 'bGx', 'uGx', 'vGx', 'fr', 'fg', 'fb', 'tBase', 'tY', 'uAnd', 'uOr', 'vAnd', 'vOr', 'smode', 'setM', c);
+  SPANS.set(key, f); return f;
+}
+
 export class GPU {
   constructor() {
     this.vram = new Uint16Array(1024 * 512);
@@ -29,7 +68,7 @@ export class GPU {
     this.phase = PH_CMD; this.buf = []; this.need = 1;
     // ---- estado de desenho (GP0 E1..E6) ----
     this.texX = 0; this.texY = 0; this.semiMode = 0; this.texDepth = 0; this.dither = false;
-    this.drawToDisplay = false; this.texDisable = false; this.texDisAllow = false; this.busyUntil = 0; this.flipX = false; this.flipY = false;
+    this.drawToDisplay = false; this.texDisable = false; this.texDisAllow = false; this.busyUntil = 0; this.skipDraw = false; this.flipX = false; this.flipY = false;
     this.twMaskX = 0; this.twMaskY = 0; this.twOffX = 0; this.twOffY = 0;
     this.daX1 = 0; this.daY1 = 0; this.daX2 = 0; this.daY2 = 0;
     this.offX = 0; this.offY = 0;
@@ -44,7 +83,7 @@ export class GPU {
     // ---- transferências ----
     this.vw = null; this.vr = null;
     this.toggle = 0; this.line = 0; this.vblank = false; this.field = 0;
-    this.frameCount = 0;
+    this.frameCount = 0; this.snap = null; this.snapKey = '';
   }
 
   // ===================== Registradores =====================
@@ -181,6 +220,7 @@ export class GPU {
       const sz = (c >> 3) & 3, w = sz === 0 ? b[b.length - 1] & 0x3FF : sz === 1 ? 1 : sz === 2 ? 8 : 16, h = sz === 0 ? (b[b.length - 1] >>> 16) & 0x1FF : sz === 1 ? 1 : sz === 2 ? 8 : 16;
       cyc = w * h * (tex ? 1.06 : semi ? 0.8 : 0.53) + 30;
     } else if (c >= 0x80 && c <= 0x9F) cyc = (((b[3] - 1) & 0x3FF) + 1) * ((((b[3] >>> 16) - 1) & 0x1FF) + 1) * 1.33 + 40;
+    if (cyc > 0 && this.rowMask >= 0 && c !== 0x80 && !(c >= 0x80 && c <= 0x9F)) cyc *= 0.5;   // 480i: só metade das linhas é desenhada
     if (cyc > 0) { const now = this.clock(); this.busyUntil = Math.max(now, this.busyUntil) + cyc; }
   }
 
@@ -190,7 +230,9 @@ export class GPU {
     const x0 = b[1] & 0x3F0, y0 = (b[1] >>> 16) & 0x1FF;
     const w = ((b[2] & 0x3FF) + 0xF) & ~0xF, h = (b[2] >>> 16) & 0x1FF;
     if (this.hw) return this.hw.fill(x0, y0, w, h, b[0]);
+    const mk = this.rowMask;
     for (let y = 0; y < h; y++) {
+      if (mk >= 0 && ((y0 + y) & 1) === mk) continue;
       const row = ((y0 + y) & 0x1FF) * 1024;
       for (let x = 0; x < w; x++) this.vram[row + ((x0 + x) & 0x3FF)] = col;
     }
@@ -334,6 +376,7 @@ export class GPU {
                r: col & 255, g: (col >> 8) & 255, b: (col >> 16) & 255, u, v });
     }
     const o = { tex, gour, semi, raw, clutX, clutY };
+    if (this.skipDraw) return;                                  // quadro descartado (frameskip): mantém o estado, não desenha
     if (this.hw) return this.hw.polygon(V, quad, o);
     if (tex) this.clutPrep(clutX, clutY);
     this.triangle(V[0], V[1], V[2], o);
@@ -377,7 +420,11 @@ export class GPU {
     const vram = this.vram, chk = this.checkMask, setM = this.setMask ? 0x8000 : 0, smode = this.semiMode, dthrOn = !!this.dither;
     const clut = this.clut, td = this.texDepth, tBase = this.texX * 64, tY = this.texY * 256;
     const mx = this.twMaskX, my = this.twMaskY, uAnd = ~(mx << 3), uOr = (this.twOffX & mx) << 3, vAnd = ~(my << 3), vOr = (this.twOffY & my) << 3;
+    const ddOn = tex ? (!raw && dthrOn) : dith;
+    const span = spanFor(tex, tex ? td : 0, gour, raw && tex, semi && true, ddOn, chk, tex && (mx | my) !== 0);
+    const mk = this.rowMask;                                     // 480i: o hardware não desenha as linhas do campo exibido
     for (let y = yS; y <= yE; y++) {
+      if (mk >= 0 && (y & 1) === mk) continue;
       const nL = A.x * dyL + (y - A.y) * dxL;                      // aresta longa: x = nL / dyL
       let xl, xr;
       const lx = ceilDiv(nL, dyL);
@@ -391,39 +438,7 @@ export class GPU {
       const dy = y - P.y, dx = xl - P.x;
       let cr = r0 + rGy * dy + rGx * dx, cg = g0 + gGy * dy + gGx * dx, cb = b0 + bGy * dy + bGx * dx;
       let cu = u0 + uGy * dy + uGx * dx, cv = v0 + vGy * dy + vGx * dx;
-      const rowI = y * 1024, dRow = (y & 3) << 2;
-      for (let x = xl; x < xr; x++) {                              // laço de pixel com plot/texel inline (mesma aritmética do plotNB/texel/shadeTexel)
-        let r, g, bl, sm = semi, dd = dith;
-        if (gour) { r = ((cr | 0) >> 12) & 255; g = ((cg | 0) >> 12) & 255; bl = ((cb | 0) >> 12) & 255; cr += rGx; cg += gGx; cb += bGx; }
-        else { r = A.r; g = A.g; bl = A.b; }
-        if (tex) {
-          const u = (((cu | 0) >> 12) & 255 & uAnd) | uOr, v = (((cv | 0) >> 12) & 255 & vAnd) | vOr; cu += uGx; cv += vGx;
-          const row = ((tY + v) & 0x1FF) << 10;
-          let texel;
-          if (td === 0) texel = clut[(vram[row + ((tBase + (u >> 2)) & 0x3FF)] >> ((u & 3) << 2)) & 15];
-          else if (td === 1) texel = clut[(vram[row + ((tBase + (u >> 1)) & 0x3FF)] >> ((u & 1) << 3)) & 255];
-          else texel = vram[row + ((tBase + u) & 0x3FF)];
-          if (texel === 0) continue;
-          sm = semi && (texel & 0x8000) !== 0;
-          const tr = texel & 31, tg = (texel >> 5) & 31, tb = (texel >> 10) & 31;
-          if (raw) { r = tr << 3; g = tg << 3; bl = tb << 3; dd = false; }
-          else { r = (tr * r) >> 4; g = (tg * g) >> 4; bl = (tb * bl) >> 4; dd = dthrOn; }
-        }
-        const idx = rowI + x, back = vram[idx];
-        if (chk && (back & 0x8000)) continue;
-        if (dd) { const d = DITHER[dRow | (x & 3)]; r += d; g += d; bl += d; }
-        r = (r < 0 ? 0 : r > 255 ? 255 : r) >> 3; g = (g < 0 ? 0 : g > 255 ? 255 : g) >> 3; bl = (bl < 0 ? 0 : bl > 255 ? 255 : bl) >> 3;
-        if (sm) {
-          const br = back & 31, bg = (back >> 5) & 31, bb = (back >> 10) & 31;
-          switch (smode) {
-            case 0: r = (br + r) >> 1; g = (bg + g) >> 1; bl = (bb + bl) >> 1; break;
-            case 1: r = br + r > 31 ? 31 : br + r; g = bg + g > 31 ? 31 : bg + g; bl = bb + bl > 31 ? 31 : bb + bl; break;
-            case 2: r = br - r < 0 ? 0 : br - r; g = bg - g < 0 ? 0 : bg - g; bl = bb - bl < 0 ? 0 : bb - bl; break;
-            default: r = Math.min(31, br + (r >> 2)); g = Math.min(31, bg + (g >> 2)); bl = Math.min(31, bb + (bl >> 2));
-          }
-        }
-        vram[idx] = r | (g << 5) | (bl << 10) | setM;
-      }
+      span(vram, clut, QT, DITHER_T, y, xl, xr, cr, cg, cb, cu, cv, rGx, gGx, bGx, uGx, vGx, A.r, A.g, A.b, tBase, tY, uAnd, uOr, vAnd, vOr, smode, setM);
     }
   }
 
@@ -439,10 +454,13 @@ export class GPU {
     if (sz === 0) { const s = b[i++]; w = s & 0x3FF; h = (s >>> 16) & 0x1FF; }
     else if (sz === 1) { w = 1; h = 1; } else if (sz === 2) { w = 8; h = 8; } else { w = 16; h = 16; }
     const x0 = sx11(pos & 0x7FF) + this.offX, y0 = sx11((pos >>> 16) & 0x7FF) + this.offY;
+    if (this.skipDraw) return;
     if (this.hw) return this.hw.rect(x0, y0, w, h, { tex, semi, raw, r, g, b: bl, u0, v0, clutX, clutY, flipX: this.flipX, flipY: this.flipY });
     if (tex) this.clutPrep(clutX, clutY);
+    const mk = this.rowMask;
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const px = x0 + x, py = y0 + y;
+      if (mk >= 0 && (py & 1) === mk) continue;
       if (px < this.daX1 || px > this.daX2 || py < this.daY1 || py > this.daY2) continue;
       if (tex) {
         const u = this.flipX ? u0 + 1 - x : u0 + x, v = this.flipY ? v0 - y : v0 + y;   // flip X: o hardware começa em u0+1 (medido)
@@ -473,6 +491,7 @@ export class GPU {
     const p0 = L.pts[i], p1 = L.pts[i + 1], c0 = L.cols[i], c1 = L.cols[i + 1];
     const x0 = sx11(p0 & 0x7FF) + this.offX, y0 = sx11((p0 >>> 16) & 0x7FF) + this.offY;
     const x1 = sx11(p1 & 0x7FF) + this.offX, y1 = sx11((p1 >>> 16) & 0x7FF) + this.offY;
+    if (this.skipDraw) return;
     if (this.hw) return this.hw.line(x0, y0, x1, y1, c0, c1, L.semi, L.gour);
     // Algoritmo do hardware: passo em ponto fixo 32.32 (arredondado "para longe do zero"), pixel = floor(pos + 0.5 - eps)
     let ax = x0, ay = y0, bx = x1, by = y1, ca = c0, cb = c1;
@@ -486,10 +505,11 @@ export class GPU {
     const gour = L.gour, dither = this.dither;                 // linhas flat também recebem dithering (medido)
     const r0 = ca & 255, g0 = (ca >> 8) & 255, b0 = (ca >> 16) & 255;
     const tr = (cb & 255) - r0, tg = ((cb >> 8) & 255) - g0, tb = ((cb >> 16) & 255) - b0;
-    const kk = k || 1;
+    const kk = k || 1, mk = this.rowMask;
     const dr = Math.trunc((tr * 4096) / kk), dg = Math.trunc((tg * 4096) / kk), db = Math.trunc((tb * 4096) / kk);
     for (let i = 0; i <= k; i++, px += sx, py += sy) {
       const x = Math.floor(px), y = Math.floor(py);
+      if (mk >= 0 && (y & 1) === mk) continue;
       let r = r0, g = g0, bl = b0;
       if (gour) { r = ((r0 << 12) + 2048 + dr * i) >> 12; g = ((g0 << 12) + 2048 + dg * i) >> 12; bl = ((b0 << 12) + 2048 + db * i) >> 12; }
       this.plot(x, y, r, g, bl, L.semi, dither);
@@ -497,6 +517,29 @@ export class GPU {
   }
 
   // ===================== Saída de vídeo =====================
+  /** paridade das linhas que NÃO podem ser desenhadas (campo exibido) em 480i com 'desenhar na área de display' proibido; -1 = sem restrição */
+  get rowMask() { return (this.interlace && this.vres && !this.drawToDisplay) ? this.field : -1; }
+
+  /** Chamado a cada fim de quadro: guarda as linhas do campo exibido (completas) para tecer com o campo anterior na saída. */
+  captureField() {
+    if (this.hw) return this.hw.captureField(this);
+    this.captureFieldSW();
+  }
+  captureFieldSW() {
+    if (!(this.interlace && this.vres) || !this.dispOn) { this.snapKey = ''; return; }
+    const w = this.width, h = this.height, wv = this.rgb24 ? Math.ceil(w * 1.5) + 2 : w + 2;
+    const key = this.startX + ',' + this.startY + ',' + w + ',' + h + ',' + (this.rgb24 ? 1 : 0);
+    if (!this.snap) this.snap = new Uint16Array(1024 * 512);
+    const vr = this.vram, sn = this.snap, par = this.field;
+    const full = key !== this.snapKey; this.snapKey = key;
+    for (let y = 0; y < h; y++) {
+      const ry = (this.startY + y) & 0x1FF;
+      if (!full && (ry & 1) !== par) continue;
+      const row = ry * 1024;
+      for (let x = 0; x < wv; x++) { const i = row + ((this.startX + x) & 0x3FF); sn[i] = vr[i]; }
+    }
+  }
+
   get dotDiv() { return this.hres2 ? 7 : [10, 8, 5, 4][this.hres1]; }   // divisor do dot clock
   get width() { return this.hres2 ? 368 : [256, 320, 512, 640][this.hres1]; }
   get height() {
@@ -510,17 +553,18 @@ export class GPU {
     const w = this.width, h = this.height;
     out = out ?? new Uint8ClampedArray(w * h * 4);
     if (!this.dispOn) { out.fill(0); for (let i = 3; i < out.length; i += 4) out[i] = 255; return { data: out, width: w, height: h }; }
+    const vram = (this.snap && this.snapKey && this.interlace && this.vres) ? this.snap : this.vram;   // 480i: dois últimos campos completos
     for (let y = 0; y < h; y++) {
       const row = ((this.startY + y) & 0x1FF) * 1024;
       for (let x = 0; x < w; x++) {
         let r, g, b;
         if (this.rgb24) {
           const bx = ((this.startX * 2 + x * 3) >> 0);             // posição em bytes
-          const wi = row + ((bx >> 1) & 0x3FF), lo = this.vram[wi], hi = this.vram[(wi & ~1023) + (((bx >> 1) + 1) & 0x3FF)];
+          const wi = row + ((bx >> 1) & 0x3FF), lo = vram[wi], hi = vram[(wi & ~1023) + (((bx >> 1) + 1) & 0x3FF)];
           const bytes = (bx & 1) ? [lo >> 8, hi & 255, hi >> 8] : [lo & 255, lo >> 8, hi & 255];
           r = bytes[0]; g = bytes[1]; b = bytes[2];
         } else {
-          const p = this.vram[row + ((this.startX + x) & 0x3FF)];
+          const p = vram[row + ((this.startX + x) & 0x3FF)];
           r = (p & 31) << 3; g = ((p >> 5) & 31) << 3; b = ((p >> 10) & 31) << 3;
           r |= r >> 5; g |= g >> 5; b |= b >> 5;
         }
