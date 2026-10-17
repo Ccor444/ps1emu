@@ -9,7 +9,7 @@
   let psx = null, video = null, running = false, paused = false, turbo = false, crashed = null;
   let cfg = { mode: -1, smooth: false }, gameKey = 'sem-disco', lidOpen = false;
   let sumEmu = 0, sumVid = 0, sumFrames = 0, acc = 0, lastT = 0, frameCount = 0, t0 = 0, canvasWait = null, applying = false;
-  let hidden = false;
+  let hidden = false, fskip = true;
 
   // ---- renderizador (adaptativo igual ao da thread principal; o probe do aparelho vem da página) ----
   const auto = { on: false, scale: 2, max: 4, slow: 0, fast: 0, fail: {}, tries: {}, ran: 0, work: 0, t: 0 };
@@ -71,10 +71,12 @@
       if (!n) return;
       const w0 = performance.now();
       for (let i = 0; i < n; i++) {
+        psx.gpu.skipDraw = fskip && i < n - (psx.gpu.rowMask >= 0 ? 3 : 2);   // desenha os 2 últimos (jogos com buffer duplo exibem o buffer do quadro anterior)
         const pcm = psx.runFrame();
         if (!turbo && pcm.length) post({ t: 'audio', pcm }, [pcm.buffer]);
       }
       const w1 = performance.now(); sumEmu += w1 - w0; sumFrames += n;
+      psx.gpu.skipDraw = false;
       if (video) video.present(psx.gpu);
       sumVid += performance.now() - w1;
       if (auto.on && !turbo && video) {
@@ -111,7 +113,7 @@
     psx.reset();
     for (const p of [0, 1]) if (m.ptype[p]) psx.sio.setPadType(p, m.ptype[p]);
     psx.sio.onRumble = (p, s, l) => post({ t: 'rumble', p, s, l });
-    psx.useJit = m.jit !== false; psx.pollSkip = m.poll !== false;
+    psx.useJit = m.jit !== false; psx.pollSkip = m.poll !== false; fskip = m.fskip !== false;
     await applyRenderer();
     if (m.side && psx.disc) {
       log('Sideload: rodando BIOS até o shell...');
@@ -143,6 +145,7 @@
         case 'turbo': turbo = !!m.v; break;
         case 'jit': psx.useJit = !!m.v; break;
         case 'poll': psx.pollSkip = !!m.v; break;
+        case 'fskip': fskip = !!m.v; if (!fskip && psx) psx.gpu.skipDraw = false; break;
         case 'smooth': cfg.smooth = !!m.v; if (video && video.r) video.r.opts.smooth = cfg.smooth; break;
         case 'renderer': cfg.mode = m.mode; cfg.smooth = !!m.smooth; if (psx) applyRenderer(); break;
         case 'analog': { const on = psx.sio.toggleAnalog(m.port || 0); log('Modo analógico: ' + (on ? 'ligado' : 'desligado (ou travado pelo jogo / controle é digital)')); break; }

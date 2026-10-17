@@ -28,6 +28,8 @@ const R = { MAINL: 0x1D80, MAINR: 0x1D82, REVL: 0x1D84, REVR: 0x1D86, KONL: 0x1D
 // FIR de reamostragem do reverb (39 taps; soma = 0x7FFE ~ ganho 1,0 em >>15)
 export const REV_FIR = new Int32Array([-1, 0, 2, 0, -10, 0, 35, 0, -103, 0, 266, 0, -616, 0, 1332, 0, -2960, 0, 10246, 0x4000,
   10246, 0, -2960, 0, 1332, 0, -616, 0, 266, 0, -103, 0, 35, 0, -10, 0, 2, 0, -1]);
+const FIR_K = [], FIR_C = []; for (let k = 0; k < 39; k++) if (REV_FIR[k]) { FIR_K.push(k); FIR_C.push(REV_FIR[k]); }   // só os coeficientes não nulos
+const FIR_N = FIR_K.length;
 
 const ATTACK = 0, DECAY = 1, SUSTAIN = 2, RELEASE = 3, OFF = 4;
 
@@ -260,14 +262,14 @@ export class SPU {
     let newL = 0, newR = 0;
     if (this.revToggle) {
       let aL = 0, aR = 0;
-      for (let k = 0; k < 39; k++) { const c = REV_FIR[k]; if (c) { const j = (hd - k) & 63; aL += c * this.revHL[j]; aR += c * this.revHR[j]; } }
+      if (cnt & 0x80) for (let q = 0; q < FIR_N; q++) { const c = FIR_C[q], j = (hd - FIR_K[q]) & 63; aL += c * this.revHL[j]; aR += c * this.revHR[j]; }
       if (cnt & 0x80) this.reverbStep(sat16(aL >> 15), sat16(aR >> 15)); else { this.revOutL = this.revOutR = 0; this.revAdvance(); }
       newL = this.revOutL; newR = this.revOutR;
     }
     this.revUL[hd] = newL; this.revUR[hd] = newR;                    // saída do reverb: zero-stuffing + FIR (ganho 2)
     if (cnt & 0x80) {
       let uL = 0, uR = 0;
-      for (let k = 0; k < 39; k++) { const c = REV_FIR[k]; if (c) { const j = (hd - k) & 63; uL += c * this.revUL[j]; uR += c * this.revUR[j]; } }
+      for (let q = 0; q < FIR_N; q++) { const c = FIR_C[q], j = (hd - FIR_K[q]) & 63; uL += c * this.revUL[j]; uR += c * this.revUR[j]; }
       mixL += sat16(uL >> 14); mixR += sat16(uR >> 14);
     }
 

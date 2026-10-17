@@ -158,9 +158,11 @@ const frame = () => {
     if (!n) return;
     const w0 = performance.now();
     for (let i = 0; i < n; i++) {
+      psx.gpu.skipDraw = fskip && i < n - (psx.gpu.rowMask >= 0 ? 3 : 2);                  // atrasado: só os 2 últimos quadros do lote são desenhados (o exibido é o buffer desenhado no quadro anterior: desenhar só o último causava piscadas)
       const pcm = psx.runFrame();
       if (!turbo && audio.node) audio.push(pcm);
     }
+    psx.gpu.skipDraw = false;
     video.present(psx.gpu);
     if (auto.on && !turbo) {
       const e = performance.now(); auto.ran += n; auto.work += e - w0;
@@ -281,6 +283,7 @@ $('ddump').onclick = () => { if (noDbg()) return; const a = parseInt($('dbp').va
 $('report').onclick = () => download('relatorio-ps1emu.txt', R && R.report ? R.report : dbg.report(crashed));
 $('jit').onchange = () => { psx.useJit = $('jit').checked; if (R) R.post({ t: 'jit', v: $('jit').checked }); };
 psx.pollSkip = $('poll').checked;
+let fskip = $('fskip').checked; $('fskip').onchange = () => { fskip = $('fskip').checked; if (R) R.post({ t: 'fskip', v: fskip }); };
 $('poll').onchange = () => { psx.pollSkip = $('poll').checked; if (R) R.post({ t: 'poll', v: $('poll').checked }); };
 
 // ---- modo Worker: o emulador roda em outra thread; aqui ficam UI, entrada, áudio e IndexedDB ----
@@ -308,7 +311,7 @@ const startRemote = async (biosFile, disc) => {
   }
   const ptype = [0, 1].map(p => { const v = ls.get('ps1emu.ptype' + p); return v && v !== 'none' ? v : null; });
   const d = disc && (disc.cue ? { cue: disc.cue, map: [...disc.map] } : { bytes: disc.bytes });
-  r.post({ t: 'init', bios: await bytes(biosFile), disc: d, cards, ptype, side: $('side').checked, jit: $('jit').checked, poll: $('poll').checked, mode: +$('renderer').value, smooth: $('smooth').checked, probe: (() => { const p = probeDevice(); auto.probed = true; log('Adaptativo: ' + p.why); return { scale: p.scale, max: p.max }; })() });
+  r.post({ t: 'init', bios: await bytes(biosFile), disc: d, cards, ptype, side: $('side').checked, jit: $('jit').checked, poll: $('poll').checked, fskip: fskip, mode: +$('renderer').value, smooth: $('smooth').checked, probe: (() => { const p = probeDevice(); auto.probed = true; log('Adaptativo: ' + p.why); return { scale: p.scale, max: p.max }; })() });
   await ready;
   running = true; crashed = null; $('pause').disabled = false; refreshSlots();
   document.addEventListener('visibilitychange', () => r.post({ t: 'hidden', v: document.hidden }));   // aba escondida: pausa a emulação (como o rAF fazia)

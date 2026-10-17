@@ -151,6 +151,7 @@ export class Bus {
   ioRead0(p, size) {
     if (this.logIo) this.countIo('R', p, size);
     const off = p - 0x1F801000;
+    if (p >= 0x1F801810 && p < 0x1F801818 && this.gpu) { if ((p & ~3) === 0x1F801810) return this.gpu.readData() >>> ((p & 3) * 8); return this.gpu.readStatus() >>> ((p & 3) * 8); }   // GPU primeiro (é o registrador mais lido)
     if (this.spu && p >= 0x1F801C00) return this.spu.read(p, size);
     if (this.cdrom && p >= 0x1F801800 && p < 0x1F801804) return this.cdrom.read(p, size);
     if (this.mdec && (p & ~3) >= 0x1F801820 && (p & ~3) <= 0x1F801824) return this.mdec.read(p & ~3);
@@ -158,8 +159,6 @@ export class Bus {
     if (this.dma && p >= 0x1F801080 && p < 0x1F801100) return this.dma.read(p, size);
     if (this.timers && p >= 0x1F801100 && p < 0x1F801130) return this.timers.read(p, size);
     if (this.sio && p >= 0x1F801040 && p < 0x1F801050) return this.sio.read(p, size);
-    if (this.gpu && (p & ~3) === 0x1F801810) return this.gpu.readData() >>> ((p & 3) * 8);
-    if (this.gpu && (p & ~3) === 0x1F801814) return this.gpu.readStatus() >>> ((p & 3) * 8);
     // SPUSTAT (0x1F801DAE) espelha os 6 bits baixos do SPUCNT (0x1F801DAA) - fallback sem SPU
     if (p === 0x1F801DAE && size === 2) return this.ioView.getUint16(0xDAA, true) & 0x3F;
 

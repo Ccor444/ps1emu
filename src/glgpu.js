@@ -30,12 +30,13 @@ void main(){
 
 const FS_PRIM = `#version 300 es
 precision highp float; precision highp int; precision highp usampler2D;
-uniform usampler2D u_vram; uniform float u_scale; uniform int u_pass; uniform int u_setMask;
+uniform usampler2D u_vram; uniform float u_scale; uniform int u_pass; uniform int u_setMask; uniform int u_rowMask;
 in vec3 v_col; in vec2 v_uv; flat in ivec4 v_tex; flat in ivec4 v_flg; flat in ivec4 v_tw;
 out vec4 o_color;
 const int DITHER[16] = int[16](-4,0,-3,1, 2,-2,3,-1, -3,1,-4,0, 3,-1,2,-2);
 int vramAt(ivec2 p){ return int(texelFetch(u_vram, ivec2(p.x & 1023, p.y & 511), 0).r); }
 void main(){
+  if (u_rowMask >= 0 && (int(floor(gl_FragCoord.y / u_scale)) & 1) == u_rowMask) discard;   // 480i: não desenha as linhas do campo exibido
   ivec3 c = ivec3(floor(v_col + 0.002));
   bool textured = v_flg.x < 3;
   bool semiTexel = false;
@@ -105,6 +106,16 @@ precision highp float;
 uniform sampler2D u_tex; in vec2 v_uv; out vec4 o_color;
 void main(){ o_color = vec4(texture(u_tex, v_uv).rgb, 1.0); }`;
 
+const FS_FILL = `#version 300 es
+precision highp float;
+uniform vec4 u_col; uniform float u_scale; uniform int u_row; out vec4 o_color;
+void main(){ if ((int(floor(gl_FragCoord.y / u_scale)) & 1) == u_row) discard; o_color = u_col; }`;
+
+const FS_FIELD = `#version 300 es
+precision highp float;
+uniform sampler2D u_src; uniform float u_scale; uniform int u_par; out vec4 o_color;
+void main(){ if ((int(floor(gl_FragCoord.y / u_scale)) & 1) != u_par) discard; o_color = texelFetch(u_src, ivec2(gl_FragCoord.xy), 0); }`;
+
 const Q5 = new Uint8Array(256); for (let i = 0; i < 256; i++) Q5[i] = Math.round(i * 31 / 255);
 
 export class GLRenderer {
@@ -128,7 +139,7 @@ export class GLRenderer {
     this.pb = [1e9, 1e9, -1, -1];                              // bbox pendente (nativo) do lote ainda não desenhado
     this.dirty = new Uint8Array(TX * TY);                      // tiles em que H é mais novo que N
     this.rb = null; this.rgba = null;
-    this.outW = 0; this.outH = 0;
+    this.outW = 0; this.outH = 0; this.dispKey = ''; this.texDisp = null; this.fboDisp = null;
   }
 
   // ------------------------------------------------------------------ GL setup
@@ -148,6 +159,8 @@ export class GLRenderer {
     this.blitN = this.compile(VS_QUAD, FS_BLIT_NATIVE);
     this.blitC = this.compile(VS_QUAD, FS_BLIT_RGBA);
     this.pres = this.compile(VS_QUAD, FS_PRESENT);
+    this.fillP = this.compile(VS_QUAD, FS_FILL);
+    this.fieldP = this.compile(VS_QUAD, FS_FIELD);
 
     // H: textura + stencil
     this.texH = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.texH);
@@ -315,7 +328,8 @@ export class GLRenderer {
   // ------------------------------------------------------------------ comandos de VRAM
   fill(x0, y0, w, h, col) {
     this.flush();
-    const gl = this.gl, S = this.scale;
+    const gl = this.gl, S = this.scale, mk = this.gpu.rowMask;
+    if (mk >= 0) return this.fillMasked(x0, y0, w, h, col, mk);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboH); gl.viewport(0, 0, this.W, this.H);
     gl.disable(gl.BLEND); gl.enable(gl.SCISSOR_TEST); gl.colorMask(true, true, true, true); gl.stencilMask(0xFF);
     gl.clearColor(((col & 255) >> 3) / 31, (((col >> 8) & 255) >> 3) / 31, (((col >> 16) & 255) >> 3) / 31, 0); gl.clearStencil(0);
@@ -323,6 +337,52 @@ export class GLRenderer {
       gl.scissor(x * S, y * S, rw * S, rh * S); gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
       this.markDirty(x, y, x + rw - 1, y + rh - 1);
     });
+  }
+
+  /** fill em 480i: só as linhas do campo que não está sendo exibido (via shader; o stencil é zerado junto) */
+  fillMasked(x0, y0, w, h, col, mk) {
+    const gl = this.gl, S = this.scale;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboH); gl.viewport(0, 0, this.W, this.H);
+    gl.disable(gl.BLEND); gl.enable(gl.SCISSOR_TEST); gl.colorMask(true, true, true, true);
+    gl.enable(gl.STENCIL_TEST); gl.stencilMask(0xFF); gl.stencilFunc(gl.ALWAYS, 0, 0xFF); gl.stencilOp(gl.REPLACE, gl.REPLACE, gl.REPLACE);
+    gl.useProgram(this.fillP.p); gl.uniform1i(this.fillP.u.u_ndc, 0);
+    gl.uniform4f(this.fillP.u.u_col, ((col & 255) >> 3) / 31, (((col >> 8) & 255) >> 3) / 31, (((col >> 16) & 255) >> 3) / 31, 0);
+    gl.uniform1f(this.fillP.u.u_scale, S); gl.uniform1i(this.fillP.u.u_row, mk);
+    this.rects(x0, y0, w, h, (x, y, rw, rh) => {
+      gl.scissor(x * S, y * S, rw * S, rh * S);
+      this.drawQuad(x, y, rw, rh);
+      this.markDirty(x, y, x + rw - 1, y + rh - 1);
+    });
+    gl.bindVertexArray(null);
+  }
+
+  /** fim de quadro em 480i: guarda as linhas do campo exibido (completas) numa textura de display; a saída tece com o campo anterior */
+  captureField(g) {
+    this.flush();
+    if (!(g.interlace && g.vres) || !g.dispOn) { this.dispKey = ''; g.snapKey = ''; return; }
+    const gl = this.gl, S = this.scale, w = g.width, h = g.height;
+    if (g.rgb24) { this.dispKey = ''; this.rects(g.startX, g.startY, Math.ceil(w * 1.5) + 2, h, (x, y, rw, rh) => this.syncNative(x, y, rw, rh)); g.captureFieldSW(); return; }
+    g.snapKey = '';
+    if (!this.texDisp) {
+      this.texDisp = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.texDisp);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, this.W, this.H);
+      this.setFilter(this.texDisp, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      this.fboDisp = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboDisp);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texDisp, 0);
+    }
+    const key = g.startX + ',' + g.startY + ',' + w + ',' + h, full = key !== this.dispKey; this.dispKey = key;
+    if (full) {                                                  // 1º quadro (ou mudança de modo): copia a área toda
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.fboH); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.fboDisp);
+      this.rects(g.startX, g.startY, w, h, (x, y, rw, rh) => gl.blitFramebuffer(x * S, y * S, (x + rw) * S, (y + rh) * S, x * S, y * S, (x + rw) * S, (y + rh) * S, gl.COLOR_BUFFER_BIT, gl.NEAREST));
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboDisp); gl.viewport(0, 0, this.W, this.H);
+    gl.disable(gl.BLEND); gl.disable(gl.STENCIL_TEST); gl.enable(gl.SCISSOR_TEST); gl.colorMask(true, true, true, true);
+    gl.useProgram(this.fieldP.p); gl.uniform1i(this.fieldP.u.u_ndc, 0); gl.uniform1i(this.fieldP.u.u_src, 0);
+    gl.uniform1f(this.fieldP.u.u_scale, S); gl.uniform1i(this.fieldP.u.u_par, g.field);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texH);
+    this.rects(g.startX, g.startY, w, h, (x, y, rw, rh) => { gl.scissor(x * S, y * S, rw * S, rh * S); this.drawQuad(x, y, rw, rh); });
+    gl.bindVertexArray(null);
   }
 
   /** VRAM->VRAM dentro da GPU. Devolve false se o chamador deve fazer por software (após sincronizar). */
@@ -378,10 +438,10 @@ export class GLRenderer {
     pc[8] = g.twMaskX; pc[9] = g.twMaskY; pc[10] = g.twOffX; pc[11] = g.twOffY;
 
     const kind = !semi ? 0 : (textured ? 2 : 1);
-    const key = `${g.daX1},${g.daY1},${g.daX2},${g.daY2},${g.setMask ? 1 : 0},${g.checkMask ? 1 : 0},${kind},${semi ? g.semiMode : -1}`;
+    const mk = g.rowMask, key = `${g.daX1},${g.daY1},${g.daX2},${g.daY2},${g.setMask ? 1 : 0},${g.checkMask ? 1 : 0},${kind},${semi ? g.semiMode : -1},${mk}`;
     if (this.n > 0 && (key !== this.batchKey || this.n + nverts > MAX_VERTS)) this.flush();
     this.batchKey = key; this.batchKind = kind; this.batchSemi = g.semiMode;
-    this.bs = { x1: g.daX1, y1: g.daY1, x2: g.daX2, y2: g.daY2, set: g.setMask ? 1 : 0, check: g.checkMask };     // estado do lote (a GPU pode mudar antes do flush)
+    this.bs = { x1: g.daX1, y1: g.daY1, x2: g.daX2, y2: g.daY2, set: g.setMask ? 1 : 0, check: g.checkMask, mk };     // estado do lote (a GPU pode mudar antes do flush)
     // bbox pendente (para dirty tiles e hazard de textura)
     const p = this.pb;
     p[0] = Math.min(p[0], Math.max(bx0, g.daX1, 0)); p[1] = Math.min(p[1], Math.max(by0, g.daY1, 0));
@@ -483,7 +543,7 @@ export class GLRenderer {
     gl.colorMask(true, true, true, true);
     this.applyMask(bs.set, bs.check);
     gl.useProgram(this.prim.p);
-    gl.uniform1f(this.prim.u.u_scale, S); gl.uniform1i(this.prim.u.u_setMask, bs.set); gl.uniform1i(this.prim.u.u_vram, 0);
+    gl.uniform1f(this.prim.u.u_scale, S); gl.uniform1i(this.prim.u.u_setMask, bs.set); gl.uniform1i(this.prim.u.u_rowMask, bs.mk); gl.uniform1i(this.prim.u.u_vram, 0);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texN);
     gl.bindVertexArray(this.vao); gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.f32, 0, n * STRIDE_W);
@@ -524,8 +584,9 @@ export class GLRenderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       this.drawQuad(-1, 1, 2, -2, 0, 0, 1, 1, true);
     } else {
-      gl.bindTexture(gl.TEXTURE_2D, this.texH);
-      this.setFilter(this.texH, (outS === S || !this.opts.smooth) ? gl.NEAREST : gl.LINEAR);
+      const dt = (g2 => g2.interlace && g2.vres && this.dispKey)(gpu) ? this.texDisp : this.texH;      // 480i: dois últimos campos completos
+      gl.bindTexture(gl.TEXTURE_2D, dt);
+      this.setFilter(dt, (outS === S || !this.opts.smooth) ? gl.NEAREST : gl.LINEAR);
       const u0 = gpu.startX / VW, v0 = gpu.startY / VH, u1 = (gpu.startX + w) / VW, v1 = (gpu.startY + h) / VH;
       this.drawQuad(-1, 1, 2, -2, u0, v0, u1, v1, true);
     }

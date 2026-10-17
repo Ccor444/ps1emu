@@ -41,37 +41,34 @@
   #menu .sw{display:flex;align-items:center;gap:8px;margin:10px 0;color:var(--fg);font-size:14px}
   #menu input[type=checkbox]{width:18px;height:18px;accent-color:var(--acc)}
   #menu input[type=range]{accent-color:var(--acc);width:60%}
+  /* botão grande "Iniciar" no meio da tela: aparece quando a BIOS (e o jogo) foram escolhidos */
+  #bigstart{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;display:none;flex-direction:column;align-items:center;gap:6px;min-width:min(260px,70vw);padding:18px 34px;border:0;border-radius:18px;background:var(--acc);color:#fff;font:700 clamp(20px,5vmin,30px)/1.1 system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.55),0 0 0 2px rgba(255,255,255,.25) inset;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  #bigstart small{font:500 13px/1.2 system-ui,sans-serif;opacity:.85;max-width:60vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #bigstart:active{transform:translate(-50%,-50%) scale(.97)}
+  body.can-start:not(.menu-open) #bigstart{display:flex}
   #fps{position:fixed;left:calc(10px + var(--sal));top:calc(8px + var(--sat));z-index:20;font:12px/1 ui-monospace,monospace;color:#7f7;text-shadow:0 1px 2px #000;pointer-events:none}
   /* ---- controle virtual (toque) ---- */
   #vpad{position:fixed;inset:0;z-index:10;pointer-events:none;display:none;user-select:none;-webkit-user-select:none;touch-action:none}
   body.vpad-on #vpad{display:block}
-  #vpad .g{position:absolute;pointer-events:auto;touch-action:none;opacity:var(--vop,.7)}
-  #vpad [data-b],#vpad .dpad,#vpad .stick{touch-action:none}
-  #vpad .btn{position:absolute;display:grid;place-items:center;border-radius:50%;background:rgba(40,40,52,.72);border:2px solid rgba(255,255,255,.28);color:#fff;font-weight:700;font-size:calc(var(--u)*.42);width:var(--u);height:var(--u);backdrop-filter:blur(3px)}
+  #vpad .g{position:absolute;pointer-events:auto;touch-action:none;opacity:var(--vop,.7);contain:layout style}
+  #vpad{--k:1}
+  #vpad .btn{position:absolute;display:grid;place-items:center;border-radius:50%;background:rgba(40,40,52,.72);border:2px solid rgba(255,255,255,.28);color:#fff;font-weight:700;font-size:calc(var(--u)*.42);width:var(--u);height:var(--u)}
   #vpad .btn.on,#vpad .pill.on,#vpad .dpad .on{background:rgba(91,140,255,.85);border-color:#fff}
-  #vpad .face{--u:clamp(52px,15vmin,78px);width:calc(var(--u)*2.7);height:calc(var(--u)*2.7);right:calc(14px + var(--sar));bottom:calc(14px + var(--sab))}
+  #vpad .face{--u:calc(clamp(52px,15vmin,78px)*var(--k));width:calc(var(--u)*2.7);height:calc(var(--u)*2.7);right:calc(14px + var(--sar));bottom:calc(14px + var(--sab))}
   #vpad .face .btn:nth-child(1){left:50%;top:0;transform:translateX(-50%)}                       /* triângulo */
   #vpad .face .btn:nth-child(2){right:0;top:50%;transform:translateY(-50%)}                      /* círculo */
   #vpad .face .btn:nth-child(3){left:50%;bottom:0;transform:translateX(-50%)}                    /* cruz */
   #vpad .face .btn:nth-child(4){left:0;top:50%;transform:translateY(-50%)}                       /* quadrado */
   #vpad .face .t{color:#7fe3b0}#vpad .face .c{color:#ff8d8d}#vpad .face .x{color:#8db8ff}#vpad .face .s{color:#f2a6e8}
-  #vpad .dpad{--u:clamp(120px,34vmin,176px);width:var(--u);height:var(--u);left:calc(14px + var(--sal));bottom:calc(14px + var(--sab));border-radius:50%;background:rgba(40,40,52,.45);border:2px solid rgba(255,255,255,.18)}
+  #vpad .dpad{--u:calc(clamp(120px,34vmin,176px)*var(--k));width:var(--u);height:var(--u);left:calc(14px + var(--sal));bottom:calc(14px + var(--sab));border-radius:50%;background:rgba(40,40,52,.45);border:2px solid rgba(255,255,255,.18)}
   #vpad .dpad i{position:absolute;display:grid;place-items:center;color:#fff;font-style:normal;font-size:calc(var(--u)*.2);width:34%;height:34%;border-radius:10px;background:rgba(40,40,52,.72);border:2px solid rgba(255,255,255,.28)}
   #vpad .dpad .u{left:33%;top:2%}#vpad .dpad .d{left:33%;bottom:2%}#vpad .dpad .l{left:2%;top:33%}#vpad .dpad .r{right:2%;top:33%}
-  #vpad .sh{--w:clamp(60px,17vmin,92px);height:calc(var(--w)*.5);width:var(--w);border-radius:12px;display:grid;place-items:center;background:rgba(40,40,52,.72);border:2px solid rgba(255,255,255,.28);color:#fff;font-size:calc(var(--w)*.24);font-weight:700}
+  #vpad .sh{--w:calc(clamp(60px,17vmin,92px)*var(--k));height:calc(var(--w)*.5);width:var(--w);border-radius:12px;display:grid;place-items:center;background:rgba(40,40,52,.72);border:2px solid rgba(255,255,255,.28);color:#fff;font-size:calc(var(--w)*.24);font-weight:700}
   #vpad .sh.on{background:rgba(91,140,255,.85);border-color:#fff}
   #vpad .lt,#vpad .rt{display:flex;gap:8px}
   #vpad .lt{left:calc(14px + var(--sal));top:calc(var(--vtop,58vw) + 8px)}#vpad .rt{right:calc(14px + var(--sar));top:calc(var(--vtop,58vw) + 8px)}
   #vpad .ctr{left:50%;transform:translateX(-50%);bottom:calc(14px + var(--sab));display:flex;gap:12px}
-  #vpad .stick{--u:clamp(84px,24vmin,120px);width:var(--u);height:var(--u);border-radius:50%;background:rgba(40,40,52,.45);border:2px solid rgba(255,255,255,.22)}
-  #vpad .stick b{position:absolute;left:50%;top:50%;width:46%;height:46%;margin:-23% 0 0 -23%;border-radius:50%;background:rgba(160,180,255,.55);border:2px solid rgba(255,255,255,.5)}
-  #vpad .ls{left:calc(14px + var(--sal) + 6vmin);bottom:calc(var(--sab) + 30vmin + 28px)}#vpad .rs{right:calc(14px + var(--sar) + 6vmin);bottom:calc(var(--sab) + 40vmin + 14px)}
-  body:not(.vsticks) #vpad .stick,body:not(.vsticks) #vpad .ana{display:none}
-  #vpad .ana .sh{width:calc(var(--w)*1.35)}
-  #vpad .ana{left:50%;transform:translateX(-50%);bottom:calc(14px + var(--sab) + 44px)}
   @media (orientation:landscape){
-    #vpad .ls{left:calc(14px + var(--sal) + clamp(120px,34vmin,176px) + 10px);bottom:calc(var(--sab) + 14px)}
-    #vpad .rs{right:calc(14px + var(--sar) + clamp(140px,40.5vmin,211px) + 10px);bottom:calc(var(--sab) + 14px)}
     #vpad .lt{top:calc(10px + var(--sat) + 48px)}#vpad .rt{top:calc(10px + var(--sat) + 48px)}
     #vpad .lt,#vpad .rt{display:flex;flex-direction:column;gap:8px}
     #vpad .rt{right:calc(70px + var(--sar))}
@@ -85,19 +82,19 @@
     <div class="g dpad" data-dpad><i class="u">▲</i><i class="d">▼</i><i class="l">◀</i><i class="r">▶</i></div>
     <div class="g face"><div class="btn t" data-b="triangle">△</div><div class="btn c" data-b="circle">○</div><div class="btn x" data-b="cross">✕</div><div class="btn s" data-b="square">□</div></div>
     <div class="g ctr"><div class="sh" data-b="select">SELECT</div><div class="sh" data-b="start">START</div></div>
-    <div class="g ana"><div class="sh" data-act="analog">ANALOG</div></div>
-    <div class="g stick ls" data-stick="l"><b></b></div><div class="g stick rs" data-stick="r"><b></b></div>
   </div>
   <span id="fps"></span>
 </div>
 <button id="gear" aria-label="Menu" title="Menu (Esc)"><svg viewBox="0 0 24 24"><path d="M19.4 13a7.9 7.9 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-4a.5.5 0 0 0-.5.4l-.4 2.6c-.6.2-1.2.6-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.6 11a7.9 7.9 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.8 1.7 1l.4 2.6c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.6c.6-.2 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6L19.4 13zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg></button>
+<button id="bigstart" type="button" aria-label="Iniciar"><span id="bigstartTxt">▶ Iniciar</span><small id="bigstartSub"></small></button>
 <div id="scrim"></div>
 <aside id="menu" aria-label="Menu">
 <h3>PS1 Emu</h3><div class="sub">BIOS + CPU + GPU + SPU em JavaScript</div>
-<div><button id="pause" disabled>Pausar</button> <button id="fs">Tela cheia</button> <label style="display:inline"><input type="checkbox" id="jit" checked> JIT</label> <label style="display:inline" title="Quando o jogo fica só esperando (lendo o status da GPU/contadores), avança o relógio até a próxima mudança em vez de emular cada volta. Mais rápido em celulares."><input type="checkbox" id="poll" checked> Pular esperas</label> <label style="display:inline" title="Roda o emulador numa thread separada (mais fluido; sem depurador). Vale ao clicar em Iniciar."><input type="checkbox" id="useworker" checked> Thread separada</label> </div>
+<div><button id="pause" disabled>Pausar</button> <button id="fs">Tela cheia</button> <label style="display:inline"><input type="checkbox" id="jit" checked> JIT</label> <label style="display:inline" title="Quando o jogo fica só esperando (lendo o status da GPU/contadores), avança o relógio até a próxima mudança em vez de emular cada volta. Mais rápido em celulares."><input type="checkbox" id="poll" checked> Pular esperas</label> <label style="display:inline" title="Quando o emulador está atrasado, não desenha os quadros intermediários (só o último é mostrado). Mantém a velocidade do jogo e o áudio em sincronia em celulares fracos."><input type="checkbox" id="fskip" checked> Pular quadros</label> <label style="display:inline" title="Roda o emulador numa thread separada (mais fluido; sem depurador). Vale ao clicar em Iniciar."><input type="checkbox" id="useworker" checked> Thread separada</label> </div>
 <details open><summary>Tela e controle virtual</summary>
 <div class="sw"><input type="checkbox" id="vpadOn"><label for="vpadOn" style="margin:0;color:inherit">Teclado virtual (toque) — para celular/tablet</label></div>
-<div class="sw"><input type="checkbox" id="vpadSticks"><label for="vpadSticks" style="margin:0;color:inherit">Mostrar analógicos (liga o DualShock)</label></div>
+<div class="sw"><input type="checkbox" id="vpadHaptic" checked><label for="vpadHaptic" style="margin:0;color:inherit">Vibrar ao tocar nos botões</label></div>
+<label>Tamanho do controle <input type="range" id="vpadSize" min="70" max="150" value="100"></label><br>
 <label>Opacidade do controle <input type="range" id="vpadOp" min="25" max="100" value="70"></label>
 <small>Dica: toque na engrenagem (ou Esc) para abrir/fechar este menu. O controle aceita vários toques ao mesmo tempo.</small>
 </details>
