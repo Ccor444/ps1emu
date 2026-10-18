@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import { PSX } from '../../src/psx.js';
+const [exePath, frames = 200] = process.argv.slice(2);
+const psx = new PSX(); let out = ''; psx.onTTY = s => { out += s; };
+psx.loadBios(new Uint8Array(fs.readFileSync('/mnt/user-data/uploads/SCPH1001.BIN'))); psx.reset(); psx.bootToShell();
+const f = new Uint8Array(fs.readFileSync(exePath)), dv = new DataView(f.buffer, f.byteOffset), size = dv.getUint32(0x1C, true);
+psx.sideload({ pc: dv.getUint32(0x10, true), gp: dv.getUint32(0x14, true), textAddr: dv.getUint32(0x18, true), data: f.subarray(0x800, 0x800 + size), sp: dv.getUint32(0x30, true) });
+const d = psx.dma, w = d.write.bind(d), fin = d.finish.bind(d);
+d.write = (a, s, v) => { console.log(`DMA wr ${a.toString(16)} = ${(v >>> 0).toString(16)} @${psx.cpu.cycles}`); return w(a, s, v); };
+d.finish = ch => { console.log('finish', ch, 'dicr=', d.dicr.toString(16)); fin(ch); console.log('  ->', d.dicr.toString(16)); };
+for (let i = 0; i < +frames; i++) psx.runFrame();
+console.log(out.slice(-400));
