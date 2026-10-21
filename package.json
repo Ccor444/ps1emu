@@ -1,0 +1,12 @@
+{
+  "name": "ps1emu",
+  "version": "0.1.0",
+  "description": "Emulador de PlayStation 1 em JavaScript - etapa 1: BIOS + CPU R3000A",
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test/audio-out.test.js && node test/tick.test.js && node test/cpu.test.js && node test/gpu-spu.test.js && node test/devices.test.js && node test/memcard.test.js && node test/mdec.test.js && node test/gte.test.js && node test/wasm.test.js && node test/gte-wasm.test.js && node test/jit.test.js && node test/jit-loops.test.js && node test/interlace.test.js && node test/gpu-remote.test.js && node test/blobsource.test.js && node test/cdda.test.js && node test/accuracy.test.js && node test/pad.test.js && node test/input.test.js && node test/state.test.js && node test/hwtests.test.js && node test/gpu-exact.test.js && node test/gte-fuzz.test.js && node test/mdec-frame.test.js && node test/cop.test.js",
+    "test:boot": "node test/boot.test.js",
+    "run": "node run.js SCPH1001.BIN"
+  }
+}
