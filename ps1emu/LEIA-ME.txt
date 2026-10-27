@@ -1,0 +1,618 @@
+PS1 Emu (JS) - CPU + GPU + SPU + DMA + Timers + SIO0 + CD-ROM
+
+COMO USAR
+1) Navegador, sem servidor: duplo clique em index.html, escolha a BIOS (SCPH1001.BIN) e o disco (.bin) e
+   clique em Iniciar. (usa dist/ps1emu.js, script classico: funciona em file://)
+   Teclas: setas | Z=cruz X=bola A=quadrado S=triangulo | Q/W=L1/R1 E/R=L2/R2 | Enter=Start Backspace=Select
+2) Depois de editar arquivos em src/ ou web/video-out.js / web/audio-out.js:   node build.js
+3) Terminal: node run.js SCPH1001.BIN 100__Star.bin --steps 5000000
+4) Testes:   npm test                         (74 testes, sem precisar de BIOS/jogo)
+             BIOS=SCPH1001.BIN DISC=jogo.bin npm run test:boot    (boot real pela BIOS)
+
+MEMORY CARDS
+ Interface: escolha o arquivo em "Memory Card 1/2" (.mcr/.mcd/.bin 128KB, VGS ou DexDrive) ou deixe em branco para criar
+ um cartao novo. Para guardar o progresso clique em "Baixar" (gera memcardN.mcr cru, compativel com ePSXe/DuckStation).
+ Terminal: node run.js BIOS.BIN jogo.bin --mc0 samples/epsxe000.mcr   (grava de volta se o jogo alterar)
+ samples/ tem os dois cartoes enviados (epsxe000: save de FF9; epsxe001: vazio) usados nos testes.
+
+ESTRUTURA
+ src/cpu.js       R3000A (delay slots, COP0, excecoes)      src/gpu.js   rasterizador por software
+ src/bus.js       mapa de memoria / I/O                     src/spu.js   24 vozes ADPCM, ADSR, reverb, XA
+ src/psx.js       relogio central, linhas, VBLANK, audio    src/dma.js   7 canais (OTC, GPU, SPU, CD)
+ src/cdrom.js     controlador de CD + XA-ADPCM              src/timers.js  3 root counters
+ src/sio.js       controle + memory card (SIO0)               src/scheduler.js eventos em ciclos
+ src/disc.js      BIN/ISO9660/EXE                           src/gte.js   GTE completo (COP2)
+ src/memcard.js   cartao 128KB, formatos, diretorio
+ src/mdec.js      decodificador de video (IDCT, YUV->RGB 15/24 bits, DMA0/DMA1)
+
+ESTADO ATUAL (testado com SCPH-1001 v2.2 + 100% Star SLES-03784)
+ OK  Boot normal pela BIOS (sem sideload): kernel -> le o disco -> executa o EXE do jogo
+ OK  CD-ROM, DMA, timers, controle (SIO0), XA-ADPCM, SPU, GPU por software
+ OK  O jogo chega na TELA DE TITULO ("100% STAR - PRESS START") e roda estavel por milhares de quadros
+ OK  Memory card: o jogo detecta os 2 cartoes, le/grava (frame de teste 63) e abre o menu New/Load Game
+ OK  MDEC: a intro em video (INTRO.STR) decodifica e toca com audio XA (logo EIDOS INTERACTIVE visivel)
+ OK  GTE: RTPS/RTPT, NCLIP, OP, MVMVA, DPCS/DPCT, INTPL, NCS/NCT, NCCS/NCCT, NCDS/NCDT, CDP, CC, DCPL, SQR, AVSZ3/4, GPF, GPL
+     (MAC 44 bits, flags, divisao UNR). O jogo executa ~1,2 milhao de comandos e mostra um personagem 3D no menu.
+ OK  Jogavel ate os menus: Title -> New Game -> Select Territory -> My Popgroup -> Select Popstar (modelo 3D)
+ --  Falta: velocidade (recompilador), CD-DA, ajuste fino de tempos do CD-ROM, GTE sem ciclos reais, renderizador WebGL
+ Veja ANALISE.md (diagnostico) e ANALISE-REFERENCIA.md (comparacao com o projeto MIT de referencia).
+
+----------------------------------------------------------------------
+RECOMPILADOR DINÂMICO (src/jit.js)
+----------------------------------------------------------------------
+- Traduz blocos MIPS em funções JS (new Function). Ligado por padrão (psx.useJit = true).
+- Preserva delay slots, load delay, exceções precisas, contagem de ciclos e invalidação
+  quando CPU/DMA escrevem em RAM com código compilado.
+- Com onTrace ligado (ou psx.useJit = false) usa o interpretador de instrução única.
+- CLI: node run.js BIOS.BIN disco.bin --steps N [--nojit] [--io]
+- Teste: test/jit.test.js compara 60 programas aleatórios (interpretador x JIT):
+  registradores, HI/LO, PC, COP0, ciclos e RAM têm de ser idênticos.
+- Medido: ~17 MIPS (interpretador) -> ~34 MIPS (JIT) no Node com BIOS + 100% Star.
+
+----------------------------------------------------------------------
+CD-DA / MULTI-TRILHA
+----------------------------------------------------------------------
+- Discos: .bin cru 2352, .iso 2048 ou .cue (+ .bin das trilhas). Um arquivo por trilha ou
+  todas num só; MODE1/2048, MODE1/2352, MODE2/2352, AUDIO; INDEX 00/01 e PREGAP.
+- No navegador: selecione o .cue E todos os .bin juntos no campo "Disco".
+- GetTN/GetTD com a TOC real; Play (trilha ou Setloc), Pause, Stop, Seek, GetlocP com
+  track/index/tempo relativo e absoluto; relatório de CD-DA (Setmode bit 2) com pico;
+  AutoPause (bit 1) e fim de disco -> INT4; Mute/Demute.
+- Troca de disco: botão "Abrir tampa"; escolher outro disco fecha a tampa (o 1º Getstat
+  depois mostra o bit 4 uma única vez, como o hardware).
+- Não suportado: .chd (precisa de zlib/lzma/FLAC), subcanais .sbi/LibCrypt, XA 8 bits.
+- Teste: node test/cdda.test.js (disco sintético com 1 trilha de dados + 2 de áudio).
+
+----------------------------------------------------------------------
+RENDERIZADOR WEBGL2 (src/glgpu.js) - resolução interna 1x a 8x
+----------------------------------------------------------------------
+- No navegador: campo "Renderizador" (Software, WebGL 1x/2x/3x/4x/6x/8x). Dá para trocar com o
+  jogo rodando. Se WebGL2 não existir, cai sozinho para o software. "suavizar" = filtro linear quando
+  a imagem de saída é menor que a VRAM interna.
+- Com o WebGL ligado o rasterizador por software NÃO roda: a VRAM em alta resolução (textura RGBA8 +
+  stencil) é a fonte da verdade; a VRAM nativa de 1024x512 é só um cache (usado p/ buscar texels
+  4/8/15 bits e CLUTs nos shaders) que é atualizado por uploads da CPU ou, sob demanda, por leitura
+  da GPU (tiles de 16x16 "sujos").
+- Suportado: polígonos/retângulos/linhas (flat, gouraud, texturizados 4/8/15 bits, modulação/raw,
+  dither), semitransparência (4 modos; texels semi/opacos em 2 passes), máscara set/check (stencil),
+  janela de textura, flip de sprites, área/offset de desenho, fill, cópia VRAM->VRAM na GPU,
+  upload/leitura de VRAM, display 15 e 24 bits.
+- Memória: 8x usa ~400 MB de VRAM de vídeo (textura + stencil + cópia); 2x/4x são os usos comuns.
+- Verificação (Chromium headless): jogo inteiro até o menu, quadros idênticos ao software em 1x
+  (diferença máx. 1 passo de cor); 2x/4x idênticos ao software ampliado exceto nas bordas.
+  tools/gl-gpu-compare.mjs compara 18 classes de comandos GP0 sintéticos (software x WebGL):
+  flat/gouraud/dither/semi-transparência/retângulos/flip/linhas/fill/cópias = 0 pixels diferentes;
+  texturizados e janela de textura/máscara: poucas dezenas de pixels de borda por ~40 primitivos
+  (arredondamento do UV; o software também é frágil nesses pontos).
+- Limites: cópia VRAM->VRAM com wrap e leituras de VRAM passam por software (mais lentas);
+  UV é afim como no hardware (sem correção de perspectiva); não há texturas em alta resolução.
+
+----------------------------------------------------------------------
+PRECISÃO: SPU e TIMERS (etapa 4)
+----------------------------------------------------------------------
+SPU (src/spu.js, src/gauss.js)
+- Interpolação Gaussiana de 4 taps com a tabela de 512 entradas do hardware (antes: linear).
+  A tabela foi extraída de uma fonte pública de referência e é validada no teste: a soma dos 4 taps
+  fica em 32639..32641 nas 256 fases (qualquer número errado quebraria isso).
+- Volumes de voz (L/R) e principal (L/R): modo fixo e SWEEP completo (linear/exponencial, crescente/
+  decrescente, fase +/-); o volume atual é legível em 0x1F801E00..0x1F801E62.
+- Ruído: LFSR de 16 bits (taps 15,12,11,10) com timer (4+step por amostra, recarga 0x20000>>shift).
+- Reverb: FIR de 39 taps na entrada (44,1 -> 22,05 kHz) e na saída (zero-stuffing, ganho 2); buffer só é
+  escrito com SPUCNT.7; CD audio entra no reverb com SPUCNT.2; acessos do reverb disparam o IRQ da SPU.
+- IRQ da SPU: dispara uma vez (até limpar) em escrita da CPU/DMA no endereço ou quando uma voz lê um
+  bloco ADPCM que contém o endereço.
+TIMERS (src/timers.js, src/psx.js)
+- Modos de sincronização reais do timer 0 (hblank) e timer 1 (vblank): pausa no blank, reset na entrada,
+  conta só dentro do blank, espera o 1º blank e depois livre; timer 2 (parado/livre). O blank é
+  derivado da faixa horizontal ativa do GPU (GP1(06)) e das linhas de vblank, atualizado a cada tick de 32 ciclos.
+Não feito nesta etapa (precisa de dados de referência do hardware para validar):
+- Rasterização da GPU bit-exata (interpolação inteira), timing real dos comandos da GPU.
+- ADSR/ruído/reverb foram conferidos contra a documentação por propriedades (testes), não contra
+  gravações de um PS1 real.
+Teste: node test/accuracy.test.js (22 testes).
+
+
+=== CONTROLES, SAVE STATES E DEPURADOR (etapa 5) ===
+Controles (painel "Controles" no index.html)
+ - Teclado e gamepad (Gamepad API, layout "standard") somam-se (OU). 1º gamepad = porta 1, 2º = porta 2.
+ - Tipo por porta: Digital ou DualShock. DualShock começa digital; o jogo liga o modo analógico (ID 0x73, 4 eixos).
+   Botão HOME do gamepad ou F9 alterna o modo analógico (se o jogo não o travou). No controle digital o analógico esquerdo vira direcional.
+ - Vibração: o mapeamento 0x4D/poll 0x42 do jogo aciona vibrationActuator do gamepad (dual-rumble).
+ - Remapear: clique no botão da tabela e aperte a tecla / botão do gamepad. Salvo no localStorage. Zona morta e vibração ajustáveis.
+ - Atalhos (remapeáveis): P pausa, F5 salvar estado, F7 carregar estado, F9 analógico, F11 tela cheia, T turbo (4x, sem áudio).
+Persistência (IndexedDB; sem ele o app segue funcionando e os botões "Baixar" continuam)
+ - Memory cards são gravados sozinhos a cada alteração e restaurados ao iniciar (arquivo escolhido tem prioridade).
+ - 5 slots de save state por jogo (gzip) + exportar/importar arquivo .ps1state. O estado inclui CPU/GTE, RAM, VRAM, SPU, DMA,
+   timers, SIO, CD-ROM, MDEC e a fila de eventos. Não inclui disco, BIOS, botões e memory cards. Restaurar exige o mesmo disco/BIOS.
+ - Para isso o agendador usa eventos descritores serializáveis: sched.call(tempo, 'cdrom'|'dma'|'sio', método, args).
+Depurador (painel "Depurador", src/debug.js): registradores, desmontagem em torno do PC, passo, breakpoints, trace dos últimos
+ 512 PCs, dump de memória (só RAM/BIOS/scratchpad, sem tocar em I/O). Breakpoints/trace usam o interpretador (JIT fica de fora).
+ Se o emulador lançar uma exceção, o loop para, o painel mostra um relatório e há botão "Baixar relatório".
+Testes novos: test/state.test.js, pad.test.js, input.test.js (npm test).
+
+
+=== SUÍTE DE HARDWARE (etapa 6) ===
+Veja tools/hwtests/README.txt: compila e roda o ps1-tests (programas feitos para o console real) sobre a BIOS e compara com os logs.
+Correções feitas por causa dele:
+ - GPUSTAT/E1: textura modo 3 preservada, bit 11 (texture disable) só com GP1(09), texpage de comandos atualiza bits 0-8/11.
+ - GPU "ocupada": cada comando de desenho (fill, retângulo, polígono, linha, cópia VRAM) mantém os bits 26/28 em 0 por um tempo
+   calibrado com a vazão do PS1 real (src/gpu.js chargeBusy; só a parte visível do polígono conta).
+ - DMA: modo 0 inicia sozinho em GPU/CD/SPU/MDEC (só OTC/PIO exigem o trigger); duração por canal (CD 24, SPU 12, GPU 1 ciclo/palavra),
+   +10 ciclos por bloco (sync 1) e chopping; antes o modo 0 do GPU nunca terminava.
+Teste de regressão: test/hwtests.test.js (npm test).
+ - Acessos à memória: custo por região e largura (src/cpu.js memCost) medido com cpu/access-time: RAM 5 ciclos/lw (antes 6), ROM 7/13/25,
+   scratchpad 1, I/O ~3, CD 7/14/26, SPU 18/18/39, expansões. Interpretador e JIT usam a mesma tabela.
+
+=== Silêncio na tela de título do 100% Star (investigado) ===
+Depois do quadro ~2145 o jogo não envia mais comandos ao CD, não tem voz do SPU ativa e silencia o CD (Mute): é a tela de título
+parada esperando uma tecla. Apertando Start/X o jogo reage (a tela muda, novos comandos de CD, áudio com pico ~11000), então o
+silêncio é comportamento do jogo, não falha do emulador. A música da intro (XA, codificação 5) toca normalmente.
+
+
+GPU bit-exata (rasterizador por software)
+-----------------------------------------
+O rasterizador por software foi calibrado contra capturas de VRAM do console real (ps1-tests/gpu/*/vram.png) e hoje bate
+pixel a pixel em: quad, texture-overflow, transparency (4 modos), triangle (Gouraud, com e sem dithering), uv-interpolation,
+texture-flip, clut-cache, lines e vram-to-vram-overlap. A verificação roda em  node test/gpu-exact.test.js  (precisa da BIOS;
+os programas de teste compilados e as referências ficam em test/fixtures/gpu/).
+O que ficou exato:
+  - Triângulos: cobertura por arestas exatas (linhas [topo, base), colunas [ceil(xE), ceil(xD)) ); cor/u/v em ponto fixo, gradiente
+    truncado a 12 bits, partindo do 1o vértice do comando, aritmética de 32 bits que "dá a volta"; limite 1023x511 do hardware.
+  - Linhas: passo 32.32 arredondado para longe do zero, pixel = floor(pos+0,5-2^-22) em x; cor com 12 bits; dithering também em linhas flat.
+  - Sprites com flip X começam em u0+1; VRAM->VRAM copia em rajadas de 16 pixels (sobreposição como no console).
+  - Cache de CLUT da GPU (4 bits = 16 entradas, 8 bits = 256; invalidado por GP0(01) ou por mudança de posição da CLUT).
+Fora do escopo/limites: o renderizador WebGL (1x) agora acompanha o rasterizador exato: retângulos, flips, linhas, fill, cópias, gouraud e máscara com 0 pixels de diferença; polígonos texturizados ficam com poucas dezenas de pixels (empates de borda) em ~85 mil. Em 2x+ a imagem é naturalmente mais detalhada;
+para fidelidade total use o modo por software. Testes clipping/rectangles do ps1-tests usam rand() do libc original (não comparáveis).
+Estados salvos de versões anteriores não têm o cache de CLUT (é recarregado no próximo desenho).
+
+Executáveis soltos (.psx / PS-X EXE)
+------------------------------------
+node tools/demos/run-all.mjs pasta [quadros] [pasta_de_saida]   roda cada .psx sobre a BIOS real e resume: travamento (exceção não tratada),
+áudio, tela desenhada e se JIT e interpretador dão a mesma VRAM. Testado com 18 programas (intros/trainers Paradox, Static, Deub, demos):
+16 rodam com gráficos e áudio; chrome (precisa de um modelo TMD externo em 0x80130000) e flaptron (executa um BREAK) caem na BIOS;
+bubble-bobble é o EXE de um jogo e precisa do disco (fica em CD_init). Dois programas dependem de dados que não estão no .psx.
+
+GTE e MDEC contra o console real (repositório JaCzekanski/ps1-tests)
+--------------------------------------------------------------------
+- GTE: 1150 vetores de teste gravados num console real (test/fixtures/gte_valid_0xc0ffee_50.log.gz) rodam em
+  tools/hwtests/gtefuzz.mjs; os 64 registradores (flags incluídas) saem idênticos nos 1150 casos. Correções: MAC0 sem
+  truncar a 32 bits antes de SX/SY, IR0 e OTZ; flags do bug de FC no MVMVA.
+- MDEC: imagem real de 320x240 (test/fixtures/mdec) decodificada em 15 e 24 bits. Ajustes medidos no hardware:
+  IDCT com mais precisão na 1ª passada, conversão YCbCr->RGB com arredondamento (+128) e saída de 15 bits arredondada
+  ((v+4)>>3). Resultado: ~79% dos pixels (15 bits) e ~70% dos bytes (24 bits) idênticos; o resíduo é ±1 e ainda
+  não foi explicado (test/mdec-frame.test.js trava o nível atual).
+
+Interface (tela cheia + menu na engrenagem + controle virtual)
+---------------------------------------------------------------
+- O jogo ocupa a janela inteira (4:3, centralizado; em celular na vertical a imagem fica no topo). Só há uma engrenagem no canto
+  superior direito: toque nela (ou Esc) para abrir o menu lateral com BIOS, disco, memory cards, renderizador, save states,
+  controles e depurador. O menu fecha sozinho ao iniciar o jogo.
+- Menu > "Tela e controle virtual": "Teclado virtual (toque)" liga/desliga o controle na tela (já vem ligado em aparelhos de toque),
+  "Mostrar analógicos" adiciona os dois sticks e troca a porta 1 para DualShock, e a opacidade é ajustável. Tudo é guardado no navegador.
+- O controle virtual tem direcional (8 direções, desliza o dedo), △○✕□, L1/L2/R1/R2, Select/Start e ANALOG; aceita vários toques ao mesmo
+  tempo e vibra levemente (quando o aparelho suporta). Código: web/ui.js (+ InputManager.setVirtual/setVirtualStick em src/input.js).
+
+ÁUDIO DE VÍDEOS (FMV) E RITMO
+ - O som dos vídeos (XA-ADPCM do CD) já era decodificado corretamente (verificado no 100% Star: 153 setores XA no vídeo de abertura).
+   O que o deixava mudo/picotado era o desempenho: o vídeo (MDEC + leitura 2x do CD) é o trecho mais pesado e, em aparelhos
+   mais lentos, o emulador não acompanha o tempo real, e a fila de áudio esvaziava (silêncio entre blocos).
+ - web/audio-out.js agora ajusta a taxa de reprodução dinamicamente (reamostragem linear): se o emulador está lento o áudio toca
+   mais devagar porém CONTÍNUO, junto com o vídeo; se está rápido, acelera de leve. Teste: node test/audio-out.test.js.
+ - web/main.js agora limita a 50 Hz (PAL) / 59,94 Hz (NTSC) independente da taxa do monitor (antes rodava a cada quadro do
+   navegador: jogo PAL a 60 Hz ficava 20% rápido e em monitores de 120/144 Hz ainda mais).
+ - Ainda não suportado: XA de 8 bits (nenhum disco testado usa).
+
+RENDERIZADOR ADAPTATIVO (novo, padrão)
+ - Opção "Adaptativo (automático)" no seletor de renderizador. Ao iniciar, detecta o aparelho (celular x computador, núcleos, memória,
+   WebGL2, tamanho máximo de textura, nome da GPU) e escolhe: software se não houver WebGL2 ou se o WebGL for emulado na CPU
+   (SwiftShader/llvmpipe); senão WebGL 1x–4x (celular fraco 1x, celular bom 2x, computador 2x–4x).
+ - Em execução mede a cada ~1 s quantos quadros foram emulados contra o ritmo pedido (50/59,94 Hz). Se ficar abaixo de 90% por 2 s,
+   reduz um degrau de resolução; se sobrar folga (<40% do tempo do quadro) por 8 s, tenta subir, com espera crescente
+   (45 s, 90 s, 180 s...) nos degraus que já falharam, para não ficar oscilando. O log mostra cada decisão.
+ - Limite: se o gargalo é a CPU (ex.: vídeos FMV em celular fraco), baixar a resolução não resolve; o áudio contínuo (audio-out)
+   cobre esse caso. Escolher manualmente qualquer outro item do seletor desliga o modo adaptativo.
+
+DESEMPENHO DO NÚCLEO (fase 1)
+ - JIT: desvios condicionais agora viram "saída lateral" dentro do mesmo bloco (superblocos): o fluxo sequencial continua sem voltar ao
+   despachante. ~30% menos despachos por quadro; instruções executadas idênticas (a diferença de ciclos no benchmark é de 7 em 843 milhões,
+   só a latência de IRQ entre blocos). Os testes de hardware dão os mesmos resultados de antes.
+ - MDEC: a IDCT ignora coeficientes nulos (resultado bit a bit idêntico; teste mdec-frame continua 79,0% / 70,4%) e não aloca mais closure por bloco.
+ - Medição: no trecho do vídeo do 100% Star o custo caiu de ~19 ms para ~15–16 ms por quadro (máquina ruidosa; faixa de 3 execuções).
+ - Perfil atual (vídeo): despachante+tick ~33%, MDEC ~14%, rasterizador por software ~16% (só no modo software), JIT ~12%, SPU ~5%.
+ - Próximos passos possíveis: tick adaptativo (hoje a cada 32 ciclos), emulação em Web Worker + OffscreenCanvas, renderizador WebGPU.
+
+DESEMPENHO DO NÚCLEO (fase 2: tick adaptativo)
+ - Antes o relógio dos periféricos (timers, SPU, vídeo, eventos) rodava a cada 32 ciclos. Agora o próximo tick é no máximo 128 ciclos à frente,
+   mas antecipado para o instante exato do próximo evento agendado (CD, DMA, SIO) ou do fim da linha de vídeo. Eventos novos antecipam o tick na hora.
+ - Leituras/escritas nos registradores dos timers sincronizam os contadores na hora (ficaram até mais exatos que antes).
+ - Resultado: trecho do vídeo do 100% Star de ~15,5 ms para ~8 ms por quadro (cerca de 2x). npm test e a suíte de hardware dão os mesmos resultados;
+   o áudio do vídeo (XA) saiu praticamente idêntico. Teste novo: node test/tick.test.js. Save states antigos continuam carregando.
+
+MODO WORKER (thread separada) — fase 3
+ - Caixa "Thread separada" (ligada por padrão) ao lado de JIT. Vale ao clicar em Iniciar. O emulador (CPU/JIT/GPU/SPU/CD) roda num Web Worker e
+   desenha direto num OffscreenCanvas (WebGL2 ou software); a página só cuida de menu, entrada, áudio e IndexedDB, então a interface não trava
+   mais quando o jogo pesa e o emulador não disputa a thread com o navegador.
+ - Funciona em file://: o código do Worker é o próprio bundle embutido como texto (PS1_WORKER_SRC) e carregado por Blob URL. build.js gera tudo
+   (dist/ps1emu.js ficou ~500 KB por isso). Se o navegador não tiver Worker/OffscreenCanvas, cai sozinho no modo antigo (thread principal).
+ - No Worker: renderizador adaptativo, trocar renderizador, pausa, turbo, JIT, save states (slots/arquivo), memory cards (autosave, baixar, trocar),
+   troca de disco, controle (teclado, gamepad, toque, vibração) e relatório de erro funcionam. O depurador (registradores/trace/breakpoints) só
+   existe no modo thread principal (desmarque "Thread separada" e reinicie).
+ - Arquivos: web/worker.js (lado do emulador), web/remote.js (RemoteMachine + SioProxy, lado da página). Testado no Chromium (WebGL, software,
+   troca de renderizador, salvar/carregar estado, entrada, áudio contínuo).
+
+AJUSTES DE DESEMPENHO (fase 3b)
+ - JIT: laço quente runBlocks() (sem a sobrecarga de step()/exec() por bloco): ~10% mais rápido, execução idêntica (mesmos ciclos/instruções).
+ - Worker: o laço agora é por setTimeout + acumulador de tempo (antes por requestAnimationFrame). Com WebGL, um compositor/GPU lento não
+   segura mais a emulação (no teste com WebGL por software: de ~8 para ~48 fps). Aba escondida pausa a emulação.
+ - Diagnóstico: no modo Worker o contador de fps mostra "emu X ms · vídeo Y ms/quadro" (tempo médio de emulação e de desenho por quadro).
+   Orçamento por quadro: 20 ms (PAL) / 16,7 ms (NTSC). emu alto = CPU lenta; vídeo alto = GPU/resolução (baixe a resolução).
+ - Se o jogo roda abaixo do tempo real o áudio toca mais devagar de propósito (acompanha o jogo, sem picotar).
+
+DESEMPENHO DO NÚCLEO (fase 3c) — foco em celular (Moto G52 ≈ CPU 3–4x mais lenta que um desktop)
+ - JIT: os registradores MIPS agora vivem em variáveis locais JS dentro de cada bloco (gravados em r[] só nas saídas/exceções); valores
+   normalizados para uint32 (>>>0) como no Uint32Array. Testes diferenciais JIT x interpretador (60 programas aleatórios) passam.
+ - Encadeamento de blocos: cada bloco lembra o último sucessor (invalidado por "época" a cada flush/escrita em código).
+ - Placar (trecho do vídeo do 100% Star, node, ms por quadro): 15,5 (início da sessão) -> 8 (tick adaptativo) -> 6,2 (locais) -> 5,9 (encadeamento);
+   instruções e ciclos idênticos aos de antes.
+ - Renderizador adaptativo em celular: começa SEMPRE em 1x; GPU de entrada (Adreno 5xx/60x/61x/62x, Mali-G3x/G5x etc.) ou ≤3 GB / ≤4 núcleos
+   nunca passa de 1x. Celulares melhores podem subir (2x/3x) se sobrar folga por 8 s.
+
+ÁUDIO — correção do "som agudo que oscila" (fase 3d)
+ - O controle de taxa do áudio acelerava até 1,4x quando o emulador "recuperava" quadros em rajada, deixando o som fino e oscilando. Agora a taxa
+   fica em 1,00–1,05 com folga (imperceptível); só desacelera forte quando a fila seca (emulador mais lento que o tempo real), e o excesso de fila
+   (>3x o alvo) é descartado em vez de virar tom agudo. Alvo de latência 160 ms. Teste: node test/audio-out.test.js.
+
+ÁUDIO — controlador de velocidade REMOVIDO (fase 3e)
+ - Valem as notas desta seção sobre as anteriores ("controle dinâmico de taxa", "toca mais devagar de propósito"): isso não existe mais.
+   O áudio toca em taxa fixa de 44,1 kHz, sem reamostragem, então o tom nunca muda. Fila com pré-buffer de ~40 ms; se o emulador atrasa, há um
+   breve silêncio até reabastecer; se recupera em rajada, o excesso acima de ~200 ms é descartado. Teste: node test/audio-out.test.js
+   (confere que as amostras saem idênticas às que entraram).
+
+=== Ajuste para GPU móvel (Mali / tile-based) ===
+- WebGL: preserveDrawingBuffer agora é desligado por padrão (evita uma cópia do quadro inteiro a cada apresentação em GPUs móveis).
+- Modo 24 bits (vídeos/FMV): a textura é alocada uma vez e atualizada com texSubImage2D.
+- O Moto G15 (Mali-G52 MC2) fica no 1x no modo adaptativo; o gargalo é a CPU, não a GPU.
+
+=== Adaptativo v2 (baseado no about:gpu do Moto G15) ===
+- GPU Mali / Adreno antigas / PowerVR / poucos núcleos: começa no renderizador por software (medido: mais rápido que WebGL nesse aparelho).
+- A escada agora vai de WebGL Nx até o software; antes parava no WebGL 1x e travava.
+- Só tenta subir para WebGL 1x se sobrar folga por vários segundos; se não aguentar, volta e o aparelho lembra (3 dias) de não tentar de novo.
+- Contador de fps passou a contar quadros emulados, não passadas do laço.
+- Quer WebGL sempre? Escolha "WebGL" manualmente no menu; o adaptativo só decide quando está em "Adaptativo".
+
+=== Desempenho no Tekken 3 (medido com o seu disco) ===
+- Rasterizador por software: laço de pixel com plot/texel inline (mesma aritmética; VRAM idêntica bit a bit em 3000 quadros de teste).
+- "Pular esperas" (caixa na barra, ligada por padrão): quando o jogo lê repetidamente o status da GPU / contadores / DMA com o mesmo valor
+  e período constante (8+ leituras), o relógio avança até o próximo instante em que o valor pode mudar (fim da linha de vídeo, evento
+  agendado ou fim do "ocupado" da GPU). Não avança se houver IRQ pendente. Ganho medido: ~10-20% nas cenas de luta.
+  No núcleo (psx.pollSkip) vem DESLIGADO para os testes de hardware continuarem exatos.
+- Perfil de uma luta (PC de desenvolvimento): CPU/JIT ~60%, rasterizador ~12%, status da GPU/contadores ~10%, SPU/tick ~10%.
+
+=== Pular quadros (frameskip automático) + scanline especializada ===
+- Quando o emulador está atrasado e precisa emular 2-3 quadros de uma vez, só o ÚLTIMO é desenhado (os outros nunca seriam mostrados mesmo).
+  Caixa "Pular quadros" na barra (ligada por padrão). Medido na luta do Tekken 3: 5,6 -> 4,2 ms/quadro (lote de 2) e 3,8 (lote de 3).
+- Rasterizador: scanline gerada sob medida por combinação de modos (textura 4/8/15 bits, gouraud, modulação, semitransparência, dither, máscara).
+  VRAM idêntica bit a bit em 3000 quadros.
+
+=== JIT da CPU v3 (laços internos, chamadas embutidas, cache global) ===
+- j/jal e "jr $ra" com retorno conhecido (sub-rotina folha) são EMBUTIDOS no mesmo bloco: menos voltas ao despachante.
+- Laço para o início do próprio bloco (bne/beq/j para trás): vira "for(;;)" interno com os registradores do MIPS em variáveis locais;
+  sai quando acaba o tempo do tick, há IRQ pendente ou o código é invalidado (código auto-modificável).
+- Cache global direto-mapeado pc -> bloco (16K entradas) antes da busca nas tabelas; despachante sem gravações desnecessárias no COP0.
+- Blocos têm "//# sourceURL=jit_<pc>" (aparecem com o PC no perfilador do Chrome/Node).
+- SPU: FIR do reverb só com os coeficientes não nulos e só quando o reverb está ligado. Leitura de I/O: GPU testada primeiro.
+- Medido (CPU sem desenhar, 3000 quadros do Tekken 3): ~5,0 -> ~4,6 ms/quadro; despachos de bloco -45%.
+- Novo teste test/jit-loops.test.js: 60 programas com laços/chamadas/retorno alterado, JIT == interpretador (registradores, RAM, ciclos, contagem).
+- Num quadro de luta típico a CPU emulada é ~30% do tempo; o rasterizador por software é ~45%.
+
+=== Correção: piscadas com 'Pular quadros' ===
+- Jogos com buffer duplo exibem, no fim do lote, o buffer desenhado no quadro ANTERIOR; desenhar só o último quadro mostrava um buffer velho (piscada).
+  Agora o lote desenha os 2 últimos quadros (teste: 0/150 quadros exibidos errados, antes 5/150). Se ainda piscar, desligue 'Pular quadros' ou 'Pular esperas' na barra para isolar a causa.
+
+----------------------------------------------------------------------
+CORREÇÃO: 480i (entrelaçado) - piscadas e "pausas" no Tekken 3
+----------------------------------------------------------------------
+Causa: o Tekken 3 roda em 368x480 entrelaçado. No hardware real, nesse modo a GPU só desenha as
+linhas do campo que NÃO está sendo exibido (GP0 E1 bit 10 = 0), o que também divide o custo de
+desenho por ~2. O emulador desenhava todas as linhas e cobrava o tempo cheio. Resultado: a GPU
+"levava" mais de 1 quadro por cena, o jogo perdia 1 quadro a cada ~9 (a lógica do jogo andava
+a ~7 passos/s, parecendo travar e continuar) e a imagem era exibida no meio do desenho (piscadas).
+Corrigido (software e WebGL):
+ - gpu.rowMask: em 480i com "desenhar na área de display" proibido, polígonos, retângulos, linhas
+   e fill pulam as linhas do campo exibido (WebGL: discard no shader; fill por shader).
+ - Custo de desenho (GPUSTAT/DMA) pela metade nesse modo.
+ - O campo (GPUSTAT bit 31) agora alterna no início do VBLANK (antes: no fim do quadro).
+ - Saída: no fim de cada quadro guarda as linhas completas do campo exibido (gpu.captureField;
+   no WebGL numa textura de display) e tece com as do campo anterior - nunca mostra linhas
+   em construção.
+ - "Pular quadros": em 480i desenha os 3 últimos quadros do lote (em 240p continuam 2).
+ - Novo teste: test/interlace.test.js.
+Efeito colateral importante: agora o jogo roda no ritmo real (lógica a 60 passos/s), então a CPU
+trabalha de verdade: no teste de luta, ~395 mil instruções/quadro (antes ~50 mil porque o jogo
+ficava esperando a GPU). O "fps" mostrado antes estava inflado por isso.
+
+----------------------------------------------------------------------
+CONTROLE VIRTUAL: sem analógicos, mais leve
+----------------------------------------------------------------------
+- Removidos os analógicos virtuais e o botão ANALOG da tela (mexer neles derrubava o fps). Quem tinha
+  ligado a opção tem a porta 1 devolvida para Digital automaticamente. Gamepad físico continua com
+  analógico/DualShock (menu "Controles").
+- Mais leve: sem desfoque (backdrop-filter) atrás dos botões; zonas de toque medidas uma vez
+  (layout) e testadas por aritmética - nenhuma consulta ao DOM durante o toque; classes visuais só
+  mudam quando o botão muda; direcional com 8 direções por ângulo.
+- Novo: controle "Tamanho do controle" (70-150%) e opção de vibração ao tocar; área de toque dos
+  botões com folga para o dedo (deslizar de um botão para outro e apertar dois ao mesmo tempo funciona).
+
+----------------------------------------------------------------------
+BOTÃO "INICIAR" NO MEIO DA TELA
+----------------------------------------------------------------------
+Ao escolher a BIOS e o jogo, o menu fecha sozinho e aparece um botão grande "Iniciar jogo" (com o
+nome do arquivo) no centro da tela; tocar nele inicia o emulador. Só com a BIOS escolhida (menu
+fechado) o botão vira "Iniciar BIOS" e abre a tela do console. Some ao iniciar. O botão "Iniciar" do
+menu continua existindo.
+
+----------------------------------------------------------------------
+"PULAR QUADROS" agora vem DESLIGADO (causa de piscadas em outros jogos)
+----------------------------------------------------------------------
+Medido: quando o emulador atrasa 3 quadros e pula o desenho de 1, jogos que desenham aos poucos na
+tela (sem redesenhar tudo a cada quadro) saem com falhas: nos demos deadline/ff9/va 86%/32%/31% dos
+quadros exibidos ficaram diferentes do correto (com o recurso desligado: 0%). Como o atraso acontece
+justamente ao entrar no jogo (carga, compilação do JIT), a tela piscava ali. Agora a caixa
+"Pular quadros" começa desmarcada (e o worker também); fica como opção experimental.
+Verificado em 19 programas (demos + 100__Star): sem o recurso, a imagem é idêntica à versão anterior
+à correção do 480i (nenhuma piscada/apagão/troca de tamanho a mais).
+
+"Pular quadros" lembrado por jogo: a escolha é guardada no navegador com a chave nome+tamanho do
+arquivo do disco. Ligue só nos jogos em que é seguro (Tekken 3: 0 erros nos testes); os outros
+continuam sem pular. Sem disco escolhido = desligado.
+
+
+==== GPU EM 2ª THREAD (experimental) ====
+Opção "GPU em 2ª thread" (lembrada por jogo). O rasterizador por software roda num Worker aninhado, com VRAM própria
+e o canvas; a thread do emulador só analisa os comandos GP0/GP1 (estado, temporização e IRQs ficam idênticos) e envia o
+fluxo a cada quadro. Medido na luta do Tekken 3: 14,4 -> 11,5 ms por quadro na thread do emulador (~20%); o desenho
+(~3,7 ms) passa para outro núcleo. Imagem e ciclos idênticos ao caminho de uma thread (test/gpu-remote.test.js).
+- Usa o renderizador por software (ignora WebGL enquanto ligada).
+- Se o jogo LER a VRAM de volta (GPUREAD), o emulador volta sozinho para uma thread só e lembra disso para o jogo
+  (a leitura que disparou o aviso sai defasada, uma única vez).
+- Savestates puxam a VRAM do worker antes de salvar; carregar um estado reenvia a VRAM.
+- Se o rasterizador atrasar (4 quadros na fila), a emulação espera para não correr à frente da imagem.
+Próximo passo: modo inteligente (escolher 1 ou 2 threads sozinho, por jogo/cena).
+
+
+==== MODO INTELIGENTE (GPU em 1 ou 2 threads, automático) ====
+Vale com o renderizador "Adaptativo" e o aparelho com 4+ núcleos. Quando o adaptativo já desceu até o software e o
+emulador ainda não acompanha (menos de 90% da velocidade por 2 s), ele TESTA a GPU em 2ª thread: mede quadros/s antes e
+depois (3 s). Se ganhou pelo menos 8%, mantém e lembra por jogo (na próxima vez já liga sozinho); se não, volta para uma
+thread e lembra que não ajuda. Se o jogo ler a VRAM de volta, volta na hora e nunca mais tenta nesse jogo.
+A caixa "GPU em 2ª thread" continua valendo como forçar ligado (e é lembrada por jogo). O log mostra as decisões ("Inteligente: ...").
+Testado no navegador: início do teste -> medição -> volta quando não ajuda; e fallback imediato com leitura de VRAM.
+
+
+==== PWA (instalar como app, funciona offline) ====
+Arquivos novos: manifest.webmanifest, sw.js, icons/ (ícones próprios 192/512 e "maskable"). O index.html registra o service worker
+sozinho, MAS navegadores só permitem service worker e "Instalar app" em https:// ou localhost - não em file://.
+Como usar no celular:
+  1) Publique a pasta num endereço https (GitHub Pages, Netlify, Cloudflare Pages... é só site estático) ou rode um servidor local
+     (ex.: "python3 -m http.server" no PC e abra http://IP-do-PC:8000 - para instalar fora de localhost precisa de https).
+  2) Abra no Chrome do celular > menu (⋮) > "Instalar app" / "Adicionar à tela inicial". Abre em tela cheia, paisagem.
+  3) Depois da 1ª visita roda offline (a BIOS/jogos continuam sendo escolhidos por você; nada deles é enviado a lugar nenhum).
+Ao publicar uma versão nova, troque VERSAO em sw.js (ex.: 'ps1emu-v2') para o app atualizar. Em file:// tudo segue como antes.
+(Versão atual do cache: ps1emu-v2.) Testado: SW ativo, 11 arquivos em cache, recarrega offline, manifest válido.
+
+
+==== BIOS LEMBRADA NESTE APARELHO ====
+Ao escolher a BIOS (arquivo de 512 KB), ela é guardada no IndexedDB do site, só neste navegador/aparelho (nada é enviado a lugar nenhum).
+Nas próximas visitas a BIOS já vem preenchida (aparece "✔ salva neste aparelho"); o jogo continua sendo escolhido a cada vez.
+Botão "Esquecer BIOS" apaga a cópia guardada. Outros tamanhos de arquivo não são guardados. Se o navegador limpar os dados do site, é só escolher de novo.
+Testado: salva, restaura ao recarregar e em outra aba, esquecer, tamanho errado ignorado, e inicia normalmente com a BIOS restaurada.
+
+
+==== SINCRONIA ÁUDIO x VÍDEO (cirúrgica) ====
+1) AudioWorklet também em file://: o Chrome recusa módulo por blob: em file://, e o som caía no ScriptProcessor (roda na thread
+   principal, sujeito a estalos quando a interface/GC trava). Agora tenta blob: e, se falhar, usa data: (testado: funciona em file://).
+2) Canal direto emulador -> áudio: o Worker manda o áudio direto ao AudioWorklet (MessageChannel), sem passar pela thread principal.
+3) Relógio do áudio como mestre: o AudioWorklet devolve o nível do buffer; um controle proporcional (média de ~1 s) ajusta o ritmo da
+   emulação em no máximo ±0,5% (inaudível) para o buffer ficar na meta. Acaba a deriva lenta entre o relógio do áudio e o da emulação
+   (que causava estalo por falta ou corte por sobra depois de minutos).
+4) Latência adaptativa: meta de 70 ms; a cada falta de áudio (travada do aparelho) sobe 15 ms (até 160 ms, no máximo 1 vez por 2 s) e
+   desce 5 ms a cada 20 s sem falta. Aparelho firme = pouca latência; aparelho com travadas = sem estalo.
+5) Sem estalo quando o buffer esvazia: a saída desce suavemente a zero (64 amostras, mesmo atravessando blocos) e volta com entrada suave.
+6) Diagnóstico na linha de fps: "áudio 70/70 ms (falta N, sobra N) · ritmo ±x% · irregularidade p95 x ms" (nível/meta do buffer, faltas e
+   cortes acumulados, correção de ritmo e desvio do intervalo entre quadros apresentados). Se algo parecer fora de sincronia, mande essa linha.
+Testes: test/audio-out.test.js (fidelidade, latência, falta sem estalo) e navegador (worklet em file://, buffer estável em ~70 ms).
+
+
+==== WEBGL NA THREAD DA GPU ====
+A "GPU em 2ª thread" agora também roda o WebGL2 (na resolução 1x..4x do seletor / do adaptativo): o worker da GPU cria o renderizador
+WebGL no próprio OffscreenCanvas, desenha e apresenta lá. A thread do emulador só analisa os comandos (e envia o fluxo), sem nenhuma
+chamada GL. Medido no sandbox (WebGL por CPU, pior caso), luta do Tekken 3 em 2x: thread do emulador 74 -> 17 ms por quadro; a imagem sai igual.
+- Trocar de renderizador/escala (seletor ou adaptativo) com a GPU em thread: a VRAM é trazida do worker (inclui a do WebGL) e reenviada ao novo.
+- Savestate com WebGL em thread: puxa a VRAM do worker antes de salvar; carregar reenvia (testado: salvar, carregar, 0x -> 3x -> 2x).
+- Modo inteligente: ao ficar atrás em QUALQUER escala, testa a GPU em thread na mesma escala antes de baixar a qualidade
+  (o resultado do teste, bom ou ruim, continua lembrado por jogo). Depois do teste, o adaptativo segue subindo/descendo a escala normalmente.
+- Se o WebGL não puder ser criado no worker, volta sozinho para uma thread (log "GPU em thread: ... usando uma thread só").
+- Áudio: teto da fila subiu para 300 ms (a meta adaptativa chega a 160 ms; rajadas de 3 quadros somam ~50 ms), evitando cortes ("sobra").
+
+
+==== DISCOS GRANDES (sem estourar a memória) ====
+Causa do "Ah, não!" (a aba cai) com jogos grandes: a página lia o disco INTEIRO para a memória (arrayBuffer) e depois COPIAVA tudo para o
+Worker (postMessage) -> uso de memória = 2x o tamanho do disco (700 MB de jogo = 1,4 GB+), acima do que a aba aguenta no celular.
+Agora (modo Worker, o padrão) o disco NÃO é carregado: a página manda o próprio arquivo escolhido (File, sem copiar dados) e o Worker lê do
+arquivo só os setores que o jogo pede (FileReaderSync), em blocos de 256 KB com cache LRU (12 blocos = 3 MB). Funciona também com .cue + vários .bin.
+Medido com um disco de 1,8 GB: aumento de memória do navegador 3205 MB (antes) -> 565 MB (agora; é só o próprio emulador).
+Não precisa de pré-carregamento: o CD real também lê sob demanda. test/blobsource.test.js confere que a leitura em blocos é idêntica à da memória.
+Obs.: o modo sem Worker (caixa desmarcada) continua lendo o disco inteiro para a memória.
+
+=== CPU em WebAssembly (nova) ===
+O núcleo da CPU R3000A agora também existe em C compilado para WebAssembly (wasm/cpu.c -> src/wasmbin.js, ~10 KB embutido no
+bundle; funciona em file://). É o modo padrão (caixa "CPU WebAssembly"); desmarcada, volta ao JIT em JavaScript.
+- Por quê: o JIT em JS gera milhares de funções pequenas e o V8 leva ~800 quadros para otimizá-las (no celular o jogo roda lento
+  por minutos). O WASM é compilado uma vez: no Tekken 3 (estado de luta, Node) fica em ~7-9 ms/quadro JÁ NO PRIMEIRO QUADRO
+  (JIT: 83 ms nos 20 primeiros, 20 ms por ~500 quadros, só depois ~8 ms).
+- Como: RAM/BIOS/scratchpad e registradores vivem na memória linear do wasm (cpu.r, cpu.cop0, cpu.pc, cpu.cycles... viram janelas
+  para ela); I/O (GPU, SPU, CD, DMA...) e GTE continuam em JS, chamados por imports. A CPU roda até o próximo tick; A0/B0 voltam
+  ao JS para o TTY da BIOS.
+- Exatidão: bit a bit igual ao interpretador JS (BIOS e Tekken 3 por 300 quadros; test/wasm.test.js compara 120 mil instruções
+  aleatórias, incluindo exceções e load delay). Rode "PS1_WASM=1 node test/xxx.test.js" para exercitar qualquer teste com o wasm.
+- Recompilar o wasm (só se mexer em wasm/cpu.c): bash wasm/build.sh  (precisa de clang com alvo wasm32 e wasm-ld).
+- Na thread principal (sem "Thread separada") o Chrome proíbe compilar wasm > 4 KB de forma síncrona; nesse caso cai no JIT.
+
+=== GTE em WASM + tick longo (padrão) ===
+- O GTE (cálculo 3D) agora também roda dentro do módulo wasm (wasm/gte.c, int64 no lugar de doubles): sem chamada ao JS por
+  instrução COP2. test/gte-wasm.test.js compara 18 mil comandos aleatórios com o GTE em JS (registradores e flags idênticos).
+- psx.step() com wasm roda 1 instrução no núcleo wasm (bootToShell e o depurador não ficam lentos).
+- O tick (timers, linhas de vídeo, SPU, eventos) passou de no máx. 128 para no máx. 2000 ciclos, limitado pelas bordas de hblank,
+  eventos agendados e IRQs de timer (já implementado antes, agora padrão). Resultado idêntico (VRAM igual no Tekken 3 e no Star,
+  toda a suíte passa com PS1_WASM=1) e ~30% menos tempo por quadro (Tekken 3 do boot: 5,9 -> 4,2 ms/quadro no Node).
+  Para voltar ao antigo: variável PS1_TICKMAX=128.
+
+=== Desentrelaçamento adaptativo por movimento (corrige o "fantasma" no 480i) ===
+- Sintoma (Tekken 3 no celular): contorno "fantasma"/listrado em volta dos personagens em movimento. Causa: em 480i cada quadro só
+  traz metade das linhas; tecer com o campo anterior (instante t-1) cria "pente" onde algo se move. O modo Adaptativo antigo
+  comparava a linha antiga com a média das vizinhas (limiar 40): perdia o fantasma de baixo contraste (azul escuro sobre fundo escuro).
+- Agora o modo Adaptativo detecta movimento de verdade: cada pixel do campo novo é comparado com o MESMO campo de 2 quadros atrás;
+  se mudou (>= 2 níveis de 5 bits), a linha do campo antigo vizinha é trocada pela média das linhas do campo atual; onde nada mexeu
+  mantém o detalhe tecido. Implementado igual no renderizador por software (gpu.js: gpu.mot) e no WebGL (glgpu.js: alfa de texDisp
+  = movimento, texPrev = cópia do campo anterior). GL e software continuam idênticos pixel a pixel (gltest).
+- A linha de status agora mostra o modo da CPU: "emu 5.6 ms (wasm)" / (jit) / (interp).
+
+=== GPU em WASM (rasterizador + saída de vídeo) ===
+- wasm/raster.c (-> src/wasmraster.js, recompilar com bash wasm/build-raster.sh): polígonos (todos os modos: flat/gouraud/textura 4/8/15 bits,
+  CLUT, janela de textura, dither, máscara, 4 modos de semi-transparência), retângulos, linhas/polilinhas, fill, cópia VRAM->VRAM,
+  captura do campo 480i + mapa de movimento, e conversão VRAM->RGBA com o desentrelaçamento. A VRAM vive na memória do wasm.
+  src/wasmgpu.js liga tudo (gpu.enableWasmRaster(); psx.enableWasm() já chama). O WebGL (hw) continua independente.
+- Exatidão: test/gpu-wasm.test.js manda o mesmo fluxo aleatório de comandos GP0 ao rasterizador JS e ao wasm e exige VRAM idêntica
+  bit a bit + RGBA idêntico nos 3 modos de desentrelaçamento (inclui 24 bits e 480i). Também: VRAM idêntica JS x wasm no Star (900 quadros)
+  e no Tekken 3 (1500 quadros a partir do boot).
+- Ganho (Node, Tekken 3 em luta, GPU na mesma thread): 12,7 -> ~7 ms/quadro; no navegador a GPU em software (thread do worker) passa a ser
+  só ~1 ms/quadro de "vídeo". Sem aquecimento do V8 (o rasterizador JS gerava funções por combinação de modos).
+- Save states: a VRAM entra normalmente; o campo guardado (480i) é recapturado no 1º quadro após carregar.
+
+=== Diagnóstico por quadro (modo wasm) ===
+A linha de status mostra, com a CPU em wasm: [cpu X · io Y (N acessos) · tick Z ms] por quadro emulado:
+ cpu  = tempo dentro do núcleo wasm (sem o I/O);  io = tempo gasto nos acessos que voltam ao JS (GPU/SPU/DMA/timers/CD; medido por
+ amostragem de 1 em 32) e N = quantos acessos por quadro;  tick = timers, linhas de vídeo, SPU, DMA e eventos agendados.
+
+== Otimizações do núcleo WASM (v11) ==
+- Teste rápido de RAM (fetch/leitura/escrita) com uma única máscara.
+- Estado da CPU (pc, npc, hi, lo, ciclos) mantido em struct local durante run(),
+  gravado de volta só ao chamar E/S ou sair.
+- Ganho medido: ~10% em MIPS (≈140 MIPS no laço ALU/load/store; ≈100 MIPS em jogo).
+- Perfil de jogo (Tekken 3): 44% núcleo CPU wasm, 14,5% rasterizador wasm, resto JS (tick, DMA, SPU, GPU cmd).
+- Teste simulado: o throttle de CPU do Chrome (CDP) não afeta Web Workers, então não simula o celular;
+  use a linha de diagnóstico do status (cpu · io · tick) no aparelho real.
+
+== Áudio (SPU) em WebAssembly (v12) ==
+- A mixagem (24 vozes ADPCM, ADSR, interpolação gaussiana, pitch mod, ruído, sweeps de volume, áudio de CD, reverb) roda em wasm/spu.c.
+  Todo o estado (RAM de 512 KB, registradores, vozes, reverb, fila do CD) vive na memória do wasm; spu.js só trata registradores/DMA.
+- psx.js gera as amostras em lote (renderRaw) em vez de uma chamada por amostra.
+- Idêntico bit a bit à implementação JS antiga (test/spu-ref.js x test/spu-wasm.test.js, programas aleatórios com reverb/sweep/ruído/CD/IRQ).
+- Custo do "tick" (SPU+timers+DMA+eventos) caiu de ~2,1 ms para ~1,1 ms por quadro (equivalente desktop).
+- Save states continuam compatíveis. Para recompilar: bash wasm/build-spu.sh
+
+== CD-ROM em WebAssembly (v13) ==
+- A parte pesada do CD-ROM foi para wasm/spu.c (mesma memória da fila de áudio do SPU): decodificação XA-ADPCM + reamostragem
+  para 44,1 kHz (xa_decode) e CD-DA (cdda: 588 amostras + pico por setor). Sem alocações por setor.
+- A leitura de dados por DMA (dmaRead) copia em bloco em vez de byte a byte.
+- A máquina de estados (comandos, respostas, interrupções, agendamento) continua em JS: é orientada a eventos e custa quase nada por quadro.
+- Idêntico à versão JS antiga (test/cdrom-ref.js x test/cdrom-wasm.test.js: XA mono/estéreo, 18,9/37,8 kHz, mudo, CD-DA, DMA).
+- Save states antigos continuam carregando (xaOld/xaPhase mantêm o formato).
+
+== Recompilador dinâmico MIPS -> WebAssembly (experimental, DESLIGADO por padrão) ==
+- src/wasmjit.js gera um módulo wasm por bloco quente; o interpretador em C (wasm/cpu.c) conta alvos de desvio e pede a compilação
+  (run() devolve 2); o despachante chama o bloco via call_indirect sobre a mesma memória (RAM, registradores, S[], D[]).
+  Semântica idêntica ao JIT em JS e ao interpretador (delay slots, load delay, exceções, ciclos, scratchpad inline, invalidação por linhas de 64 B).
+- Para ligar: globalThis.PS1_WASMJIT = N (limiar de execuções, ex.: 24) antes de criar o PSX, ou PS1_WASMJIT=N no ambiente (Node).
+- Testes: test/wasmjit.test.js compara com o interpretador JS em ~3 milhões de instruções aleatórias em laço; toda a suíte também passa com PS1_WASMJIT=1.
+- Medido (Tekken 3, luta): em laço pequeno 104 -> ~450 MIPS, mas no jogo real o ganho de estado estável foi ~0-8% do run() e a compilação custa
+  ~1,7 ms por bloco (instanciar cada módulo). Por isso fica desligado. Encadeamento por return_call_indirect (CHAIN) ficou MAIS LENTO e está desligado.
+- Divisão do custo por quadro (equivalente desktop, Tekken luta): CPU (interpretador) ~2,5-3 ms, GPU via DMA (comandos + rasterizador) ~1,2 ms,
+  GTE ~1,2 ms, tick (SPU/timers/DMA/eventos) ~0,9 ms.
+- Correções: jrd() somava ciclos errado (unsigned) em acessos ao scratchpad; teste accuracy usava reverbStep (agora exportado pelo SPU wasm).
+
+== Tamanho e desempenho do wasm/bundle (v15) ==
+- dist/ps1emu.js: 1251 KB -> ~246 KB. O código existia 3x (principal + Worker + Worker aninhado da GPU, embutidos como texto sem minificar).
+  Agora é UMA função (PS1_CORE_FN) minificada com esbuild; o texto dela (Function.toString) monta o Worker e o Worker da GPU em tempo de execução.
+  Sem esbuild disponível o build segue sem minificar (NO_MIN=1 força isso).
+- wasm: CPU 30,2 KB -> 15,5 KB e SPU 12,0 KB -> 6,9 KB compilados com -Oz (medido: MIPS e quadros do Tekken iguais ou melhores — código menor
+  compila mais rápido e cabe melhor no cache). O rasterizador fica em -O3 (com -Oz fica ~4% mais lento no desenho): 26,6 KB.
+  Para mudar: OPT=-O2 bash wasm/build.sh (idem build-raster.sh / build-spu.sh).
+- Perfil atual (Tekken, luta): interpretador da CPU ~43%, rasterizador ~16%, GPU/DMA em JS ~19%, GTE ~5%, resto (tick, SPU, vídeo).
+
+== v16: CPU com blocos pré-decodificados (dentro do wasm) ==
+ - wasm/blk.c: cada trecho linear quente (limiar PS1_WASMJIT, padrão 2 entradas; 0 desliga) é traduzido para micro-ops (campos já extraídos,
+   delay slots e load delay resolvidos na tradução) e executado num laço único. Nada de módulos novos no V8 (sem custo de compilação).
+ - Exato: mesmos ciclos, exceções e E/S do interpretador (relógio gravado antes de cada acesso lento; o bloco termina após E/S).
+   O despachante só entra num bloco se ele cabe antes do próximo tick e se não há IRQ pendente.
+ - Invalidação por linha de 64 B (CPU, DMA e state load). O JIT experimental em JS (wasmjit.js) foi removido.
+ - Medido (Tekken 3, Node): parte wasm ~5,3 -> ~4,8 ms/quadro (~10%); microbench de laço ~1,8x. wasm compilado em -O3 (48 KB).
+ - Testes: test/blk.test.js (1,2 M instruções aleatórias, com laços e código auto-modificável) + npm test nos 3 modos.
+
+== v17: correção do áudio mudo ==
+ - Desde a v15 (dist minificado) o AudioWorklet falhava: o minificador renomeava a classe PCMPull e o código do worklet ainda a chamava pelo nome
+   antigo. Agora o worklet define `const PCMPull = <classe>` explicitamente. Verificado no navegador: "áudio 59/70 ms (falta 0)" na barra de status.
+
+== v18: front-end do GP0 em wasm (modo "Thread separada") ==
+ - wasm/gpf.c: com a GPU num Worker, a thread do emulador só analisa os comandos (fila de pares [tipo, palavra], tempo de ocupação da GPU, texpage).
+   Isso agora é feito em wasm direto sobre a RAM: percorre a lista encadeada do DMA 2 (preenchimento, polígonos, retângulos e cópia VRAM->VRAM) e copia
+   uploads de imagem em bloco. Comandos fora do caminho comum (E1-E6, A0/C0, linhas, IRQ...) voltam ao JS no início do pacote, como antes.
+ - Exato: o fluxo de comandos, o busyUntil (mesma aritmética em double) e o estado do GPU saem idênticos ao caminho JS. Verificado em Tekken 3 (luta, 300 quadros)
+   e no boot de Tekken 3 e 100% Star (700 quadros): hash do fluxo e do estado iguais. Teste: test/gpf.test.js (listas aleatórias, nós cortados no meio de pacote,
+   fila cheia, upload em bloco; 0,5 M palavras).
+ - Medido no Node (Tekken 3 em luta, com Worker simulado): ~7,1 -> ~5,3 ms por quadro de emulação.
+ - PS1_WASMGPF=0 (variável de ambiente ou globalThis) desliga e volta ao caminho JS.
+
+== v19: blocos mais rápidos (load delay resolvido na tradução) ==
+ - Antes cada micro-op carregava a contabilidade da carga pendente (pr/pv). Agora a carga escreve direto no registrador; só a última operação do bloco
+   deixa a carga pendente. Se a instrução seguinte LÊ o destino da carga (valor antigo, load delay), o bloco termina antes da carga e o interpretador resolve o par.
+ - Blocos encadeados num laço interno do despachante (só reexamina IRQ/SR/PENDR entre blocos).
+ - Medido (Node, Tekken 3 em luta): parte wasm ~3,7 -> ~3,1 ms/quadro; microbench de laço ~190 -> ~225 MIPS.
+ - Mesma verificação: hashes idênticos (VRAM/RAM/áudio/PC/ciclos) entre interpretador e blocos em Tekken 3 (boot e luta) e 100% Star; npm test nos 3 modos.
+ - wasm/build.sh aceita XFLAGS (ex.: -DBLKSTAT conta entradas/instruções em bloco em S[16..18]) e STRIP (nomes de função para perfil).
+
+== v20: menos ticks + diagnóstico de E/S confiável ==
+ - O tick rodava ~808x por quadro (3 por linha de vídeo: fim da linha + bordas de hblank, mais cortes de TICK_MAX=2000). Cada ida e volta wasm<->JS custa ~5 us no celular.
+   As bordas de hblank só importam quando o timer 0 sincroniza com o blank (bit 0 do modo); agora só geram tick nesse caso (retime() atualiza o estado do blank na hora em que o jogo liga o sync).
+   TICK_MAX 2000 -> 2400 (a linha tem 2146 ciclos: 1 tick por linha em vez de 2). Resultado: ~283 ticks/quadro, tempo de tick ~0,68 ms (era ~1,29) no Node.
+ - Ciclos, PC, RAM e VRAM idênticos em Tekken 3 (luta) e 100% Star. Único efeito: o SPU gera as amostras em lote a cada tick, então o instante exato (dentro de ~3 amostras) em que
+   uma escrita de registrador do SPU vale no áudio depende da granularidade do tick (já era assim).
+ - Diagnóstico da barra de status: o tempo "io" agora desconta o custo de ler o relógio (antes saía inflado: no celular chegava a "cpu -1.3") e a barra mostra os 3 tipos de
+   acesso mais frequentes por quadro (ex.: "E/S: GPU esc 1700, GPU leit 1700, timer leit 30").
+
+== v21: E/S de espera servida no wasm ==
+ - Diagnóstico no Crash Bandicoot (celular): ~3.340 acessos de E/S por quadro (GPUSTAT ~1.170, SIO ~650, contadores ~590) = laços de espera. Cada acesso cruza wasm->JS (~140-320 ns no PC, vários us no celular).
+ - GPUSTAT (0x1F801814, leitura de 32 bits) e I_STAT/I_MASK (leitura de I_STAT; escrita dos dois) agora são servidos DENTRO do wasm. I_STAT/I_MASK vivem na memória do wasm (bus.istat/imask viram janelas);
+   o GPUSTAT é calculado com a mesma conta do gpu.js a partir de uma cópia publicada pelo JS (GF[16..21]; qualquer mudança de estado da GPU, tick, DMA, reset ou load state invalida) e busyUntil é compartilhado.
+ - Atalho de polling (pollSkip) preservado: depois de 6 leituras idênticas seguidas o acesso volta ao JS, onde o detector de laço age como antes. O status do SIO (0x1F801044) entrou na lista do detector.
+ - Medido (laço de leitura): GPUSTAT 12 -> 31 MIPS, I_STAT 29 -> 48 MIPS. Hashes (VRAM/RAM/PC/ciclos/áudio) idênticos aos da v20 em Tekken 3 e 100% Star.
+ - A barra de status mostra "(+N no wasm)" = acessos servidos sem ir ao JS.
+
+== v22: MDEC em wasm, polling de DMA, timers preguiçosos ==
+ - MDEC (decodificação de vídeo FMV) portado para C/wasm (wasm/mdec.c): IDCT, conversão de cor e filas ficam no wasm; DMA0/DMA1 leem/escrevem a RAM direto (feedRam/toRam).
+   Estado continua visível como antes (save states funcionam). PS1_WASMMDEC=0 volta ao JS. Teste: test/mdec-wasm.test.js compara com o MDEC JS original (saída, status, eventos).
+   Medido em 100% Star (FMV): 13,9 -> 10,6 ms/quadro no PC, mesmos blocos decodificados.
+ - Detector de polling (pollSkip) cobre todos os registradores de DMA e considera IRQs entregáveis; pollHorizon limita o salto. Leituras de DMA por quadro: ~327 mil -> ~24 mil (microteste).
+ - Contadores (timers) avançam sob demanda (só no tick quando algum depende do blank ou um IRQ venceu). Save state sincroniza os contadores antes de gravar (corrigido).
+ - Barra de status: endereços mais acessados e "saltos N". Hashes de VRAM/RAM/ciclos idênticos aos da v21.
+
+== v23: diagnóstico detalhado do tick ==
+ - A barra de status passa a mostrar "tick: <origem> ms, ..." com as 4 maiores origens por quadro dentro do tick (spu = geração de áudio; cdrom.*, dma.*, etc. = eventos do agendador).
+   Serve para achar o que pesa no celular quando o tick passa de ~10 ms (ex.: 89 ms em FMV). Nenhuma mudança de emulação.
+
+== v24: leitura antecipada do disco ==
+ - Diagnóstico (celular, FMV): cdrom.readSector custava 4-7 ms/quadro (no PC 0,1 ms) e a "irregularidade p95" ficava ~190 ms. Causa: cada bloco de 256 KB do .bin era lido de forma SÍNCRONA
+   (FileReaderSync atravessa o processo do navegador), travando o emulador a cada ~110 setores.
+ - BlobSource agora pré-carrega os 6 blocos seguintes com leitura assíncrona (blob.arrayBuffer) e guarda 24 blocos; a leitura síncrona só acontece em acesso aleatório (salto no disco).
+
+== v25: leitura dos contadores de timer no wasm ==
+ - Estado dos 3 contadores (counter/mode/target/frac), timerAt e dotDiv agora vivem na memória do wasm (o JS enxerga as mesmas propriedades; save states e testes inalterados).
+ - Leitura do contador (0x1F801100/10/20, 16 ou 32 bits) de um timer SEM sincronização com blank (mode b0 = 0) é calculada dentro do wasm (timerPeek: mesma conta de Timers.advance/add,
+   sem gravar nada); timers com sync, leitura do modo/alvo e valores incomuns continuam no JS. Cada leitura evitada poupa um cruzamento wasm->JS.
+ - Tekken 3 (luta): leituras de timer que chegam ao JS 361 -> 160 por quadro. Hashes de VRAM/RAM/ciclos idênticos aos da v24 nos 3 modos.
+
+== v26: correção do pulo de esperas (Umihara Kawase Shun ficava preso) ==
+ - Bug (introduzido na versão intermediária v22-v25, não existia na v21): o pulo de esperas podia saltar até o próximo vblank e valia também dentro de tratadores de interrupção (IE=0).
+   O tratador de pad do BIOS espera I_STAT bit 7 com um contador de 81 tentativas; cada tentativa pulava um quadro => o vblank ficava ~80 quadros preso, "VSync: timeout" e o jogo quase parado.
+ - Agora o pulo volta à regra segura: só sem IRQ pendente (istat & imask = 0), no máximo até o fim da linha de vídeo, antes do próximo evento, IRQ de timer ou fim de ocupação da GPU.
+   Teste novo: test/pollskip-timeout.test.js. Os registradores de DMA e o status do SIO seguem na lista de detecção.

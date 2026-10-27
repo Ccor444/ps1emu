@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icons/icon-192.png"><link rel="apple-touch-icon" href="icons/icon-192.png"><meta name="theme-color" content="#000000"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes">
+<title>PS1 Emu (JS)</title>
+<style>
+  :root{--bg:#000;--panel:rgba(18,18,22,.96);--line:#2c2c34;--fg:#e6e6ea;--mute:#9a9aa6;--acc:#5b8cff;--sat:env(safe-area-inset-top,0px);--sar:env(safe-area-inset-right,0px);--sab:env(safe-area-inset-bottom,0px);--sal:env(safe-area-inset-left,0px)}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,sans-serif;overflow:hidden;overscroll-behavior:none}
+  /* ---- palco: a tela ocupa a janela inteira (4:3, centralizada, sem barras de rolagem) ---- */
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000;touch-action:none}
+  #stage canvas#screen{width:min(100vw,133.333vh);height:min(100vh,75vw);background:#000;image-rendering:pixelated;display:block}
+  @media (orientation:portrait){#stage{align-items:flex-start}#stage canvas#screen{width:100vw;height:75vw;margin-top:var(--sat)}}
+  #stage:fullscreen canvas#screen{border-radius:0}
+  /* ---- engrenagem ---- */
+  #gear{position:fixed;top:calc(10px + var(--sat));right:calc(10px + var(--sar));z-index:50;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.18);background:rgba(20,20,26,.55);color:#fff;font-size:24px;line-height:1;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(6px);padding:0;margin:0;opacity:.55;transition:opacity .2s,transform .3s}
+  #gear:hover,#gear:focus-visible,body.menu-open #gear{opacity:1}
+  body.menu-open #gear{transform:rotate(90deg)}
+  #gear svg{width:24px;height:24px;fill:currentColor}
+  /* ---- menu lateral ---- */
+  #menu{position:fixed;top:0;right:0;bottom:0;z-index:40;width:min(440px,100vw);background:var(--panel);border-left:1px solid var(--line);transform:translateX(102%);transition:transform .25s ease;overflow-y:auto;overscroll-behavior:contain;padding:calc(64px + var(--sat)) calc(16px + var(--sar)) calc(24px + var(--sab)) 16px;touch-action:pan-y;font-size:14px}
+  body.menu-open #menu{transform:none}
+  #scrim{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .25s}
+  body.menu-open #scrim{opacity:1;pointer-events:auto}
+  #menu h3{margin:0 0 4px;font-size:18px}#menu .sub{color:var(--mute);font-size:12px;margin-bottom:12px}
+  #menu label{display:block;margin:10px 0 3px;font-size:13px;color:var(--mute)}
+  #menu label.inl,#menu label[style]{color:var(--fg)}
+  #menu button,#menu select,#menu input[type=file]::file-selector-button{font:inherit;font-size:13px;color:var(--fg);background:#25252d;border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer}
+  #menu button{margin:4px 4px 0 0}#menu button:hover:not(:disabled){border-color:var(--acc)}#menu button:disabled{opacity:.45;cursor:default}
+  #menu button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600;padding:10px 18px}
+  #menu select,#menu input:not([type=checkbox]):not([type=range]){max-width:100%}
+  #menu input[type=file]{max-width:100%;font-size:12px;color:var(--mute)}
+  #menu input[type=text],#menu input:not([type]){background:#16161b;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+  #menu details{margin:12px 0;border:1px solid var(--line);border-radius:10px;padding:2px 12px 10px;background:rgba(255,255,255,.02)}
+  #menu summary{cursor:pointer;padding:10px 0;font-weight:600;list-style:none}#menu summary::-webkit-details-marker{display:none}
+  #menu summary::after{content:"▸";float:right;color:var(--mute);transition:transform .2s}#menu details[open]>summary::after{transform:rotate(90deg)}
+  #menu table{border-collapse:collapse;font-size:12px;width:100%}#menu td,#menu th{padding:3px 6px;text-align:left}#menu td button{padding:3px 8px;margin:0;font-size:12px}
+  #menu pre{background:#000;color:#8f8;padding:8px;height:140px;overflow:auto;font-size:11px;border-radius:8px;margin:8px 0 0}
+  #menu small{color:var(--mute)}
+  #menu .row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:6px}
+  #menu .sw{display:flex;align-items:center;gap:8px;margin:10px 0;color:var(--fg);font-size:14px}
+  #menu input[type=checkbox]{width:18px;height:18px;accent-color:var(--acc)}
+  #menu input[type=range]{accent-color:var(--acc);width:60%}
+  /* botão grande "Iniciar" no meio da tela: aparece quando a BIOS (e o jogo) foram escolhidos */
+  #bigstart{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;display:none;flex-direction:column;align-items:center;gap:6px;min-width:min(260px,70vw);padding:18px 34px;border:0;border-radius:18px;background:var(--acc);color:#fff;font:700 clamp(20px,5vmin,30px)/1.1 system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.55),0 0 0 2px rgba(255,255,255,.25) inset;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  #bigstart small{font:500 13px/1.2 system-ui,sans-serif;opacity:.85;max-width:60vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #bigstart:active{transform:translate(-50%,-50%) scale(.97)}
+  body.can-start:not(.menu-open) #bigstart{display:flex}
+  #fps{position:fixed;left:calc(10px + var(--sal));top:calc(8px + var(--sat));z-index:20;font:12px/1 ui-monospace,monospace;color:#7f7;text-shadow:0 1px 2px #000;pointer-events:none}
+  /* ---- controle virtual (toque) ---- */
+  #vpad{position:fixed;inset:0;z-index:10;pointer-events:none;display:none;user-select:none;-webkit-user-select:none;touch-action:none}
+  body.vpad-on #vpad{display:block}
+  #vpad .g{position:absolute;pointer-events:auto;touch-action:none;opacity:var(--vop,.7);contain:layout style}
+  #vpad{--k:1}
+  #vpad .btn{position:absolute;display:grid;place-items:center;border-radius:50%;background:rgba(40,40,52,.72);border:2px solid rgba(255,255,255,.28);color:#fff;font-weight:700;font-size:calc(var(--u)*.42);width:var(--u);height:var(--u)}
+  #vpad .btn.on,#vpad .pill.on,#vpad .dpad .on{background:rgba(91,140,255,.85);border-color:#fff}
+  #vpad .face{--u:calc(clamp(52px,15vmin,78px)*var(--k));width:calc(var(--u)*2.7);height:calc(var(--u)*2.7);right:calc(14px + var(--sar));bottom:calc(14px + var(--sab))}
+  #vpad .face .btn:nth-child(1){left:50%;top:0;transform:translateX(-50%)}                       /* triângulo */
+  #vpad .face .btn:nth-child(2){right:0;top:50%;transform:translateY(-50%)}                      /* círculo */
+  #vpad .face .btn:nth-child(3){left:50%;bottom:0;transform:translateX(-50%)}                    /* cruz */
+  #vpad .face .btn:nth-child(4){left:0;top:50%;transform:translateY(-50%)}                       /* quadrado */
+  #vpad .face .t{color:#7fe3b0}#vpad .face .c{color:#ff8d8d}#vpad .face .x{color:#8db8ff}#vpad .face .s{color:#f2a6e8}
+  #vpad .dpad{--u:calc(clamp(120px,34vmin,176px)*var(--k));width:var(--u);height:var(--u);left:calc(14px + var(--sal));bottom:calc(14px + var(--sab));border-radius:50%;background:rgba(40,40,52,.45);border:2px solid rgba(255,255,255,.18)}
+  #vpad .dpad i{position:absolute;display:grid;place-items:center;color:#fff;font-style:normal;font-size:calc(var(--u)*.2);width:34%;height:34%;border-radius:10px;background:rgba(40,40,52,.72);border:2px solid rgba(255,255,255,.28)}
+  #vpad .dpad .u{left:33%;top:2%}#vpad .dpad .d{left:33%;bottom:2%}#vpad .dpad .l{left:2%;top:33%}#vpad .dpad .r{right:2%;top:33%}
+  #vpad .sh{--w:calc(clamp(60px,17vmin,92px)*var(--k));height:calc(var(--w)*.5);width:var(--w);border-radius:12px;display:grid;place-items:center;background:rgba(40,40,52,.72);border:2px solid rgba(255,255,255,.28);color:#fff;font-size:calc(var(--w)*.24);font-weight:700}
+  #vpad .sh.on{background:rgba(91,140,255,.85);border-color:#fff}
+  #vpad .lt,#vpad .rt{display:flex;gap:8px}
+  #vpad .lt{left:calc(14px + var(--sal));top:calc(var(--vtop,58vw) + 8px)}#vpad .rt{right:calc(14px + var(--sar));top:calc(var(--vtop,58vw) + 8px)}
+  #vpad .ctr{left:50%;transform:translateX(-50%);bottom:calc(14px + var(--sab));display:flex;gap:12px}
+  @media (orientation:landscape){
+    #vpad .lt{top:calc(10px + var(--sat) + 48px)}#vpad .rt{top:calc(10px + var(--sat) + 48px)}
+    #vpad .lt,#vpad .rt{display:flex;flex-direction:column;gap:8px}
+    #vpad .rt{right:calc(70px + var(--sar))}
+  }
+</style></head><body>
+<div id="stage">
+  <canvas id="screen" width="320" height="240"></canvas>
+  <div id="vpad" aria-label="Controle virtual">
+    <div class="g lt"><div class="sh" data-b="l2">L2</div><div class="sh" data-b="l1">L1</div></div>
+    <div class="g rt"><div class="sh" data-b="r2">R2</div><div class="sh" data-b="r1">R1</div></div>
+    <div class="g dpad" data-dpad><i class="u">▲</i><i class="d">▼</i><i class="l">◀</i><i class="r">▶</i></div>
+    <div class="g face"><div class="btn t" data-b="triangle">△</div><div class="btn c" data-b="circle">○</div><div class="btn x" data-b="cross">✕</div><div class="btn s" data-b="square">□</div></div>
+    <div class="g ctr"><div class="sh" data-b="select">SELECT</div><div class="sh" data-b="start">START</div></div>
+  </div>
+  <span id="fps"></span>
+</div>
+<button id="gear" aria-label="Menu" title="Menu (Esc)"><svg viewBox="0 0 24 24"><path d="M19.4 13a7.9 7.9 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-4a.5.5 0 0 0-.5.4l-.4 2.6c-.6.2-1.2.6-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.6 11a7.9 7.9 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.8 1.7 1l.4 2.6c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.6c.6-.2 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6L19.4 13zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg></button>
+<button id="bigstart" type="button" aria-label="Iniciar"><span id="bigstartTxt">▶ Iniciar</span><small id="bigstartSub"></small></button>
+<div id="scrim"></div>
+<aside id="menu" aria-label="Menu">
+<h3>PS1 Emu</h3><div class="sub">BIOS + CPU + GPU + SPU em JavaScript</div>
+<div><button id="pause" disabled>Pausar</button> <button id="fs">Tela cheia</button> <label style="display:inline" title="Roda a CPU do console compilada em WebAssembly (sem tempo de aquecimento, desempenho estável; é o modo mais rápido no celular). Vale ao clicar em Iniciar. Desmarcado, usa o JIT em JavaScript."><input type="checkbox" id="wasm" checked> CPU WebAssembly</label> <label style="display:inline" title="Só vale com 'CPU WebAssembly' desmarcado."><input type="checkbox" id="jit" checked> JIT</label> <label style="display:inline" title="Quando o jogo fica só esperando (lendo o status da GPU/contadores), avança o relógio até a próxima mudança em vez de emular cada volta. Mais rápido em celulares."><input type="checkbox" id="poll" checked> Pular esperas</label> <label style="display:inline" title="EXPERIMENTAL, lembrado por jogo. Quando o emulador está atrasado, não desenha os quadros intermediários (só os últimos são mostrados). Ganha velocidade (ótimo no Tekken 3), mas jogos que desenham aos poucos na tela ficam com falhas e piscadas. Se a imagem piscar, desmarque."><input type="checkbox" id="fskip"> Pular quadros</label> <label style="display:inline" title="EXPERIMENTAL, lembrado por jogo. O desenho (software OU WebGL, na resolução escolhida) roda numa segunda thread (outro núcleo do celular), liberando a CPU principal. Se o jogo ler a imagem da GPU de volta, volta sozinho para uma thread só."><input type="checkbox" id="gpuT"> GPU em 2ª thread</label> <label style="display:inline" title="Roda o emulador numa thread separada (mais fluido; sem depurador). Vale ao clicar em Iniciar."><input type="checkbox" id="useworker" checked> Thread separada</label> </div>
+<details open><summary>Tela e controle virtual</summary>
+<div class="sw"><input type="checkbox" id="vpadOn"><label for="vpadOn" style="margin:0;color:inherit">Teclado virtual (toque) — para celular/tablet</label></div>
+<div class="sw"><input type="checkbox" id="vpadHaptic" checked><label for="vpadHaptic" style="margin:0;color:inherit">Vibrar ao tocar nos botões</label></div>
+<label>Tamanho do controle <input type="range" id="vpadSize" min="70" max="150" value="100"></label><br>
+<label>Opacidade do controle <input type="range" id="vpadOp" min="25" max="100" value="70"></label>
+<small>Dica: toque na engrenagem (ou Esc) para abrir/fechar este menu. O controle aceita vários toques ao mesmo tempo.</small>
+</details>
+<label>BIOS <input type="file" id="bios"></label> <span id="biosSaved" style="display:none;font-size:12px;color:var(--mute)">✔ salva neste aparelho <button type="button" id="biosForget" style="font-size:12px;padding:2px 8px">Esquecer BIOS</button></span>
+<label>Renderizador <select id="renderer"><option value="-1" selected>Adaptativo (automático)</option><option value="0">Software (CPU)</option><option value="1">WebGL 1x (nativo)</option><option value="2">WebGL 2x</option><option value="3">WebGL 3x</option><option value="4">WebGL 4x</option><option value="6">WebGL 6x</option><option value="8">WebGL 8x (muita VRAM)</option></select> <label style="display:inline"><input type="checkbox" id="smooth"> suavizar</label> <label style="display:inline" title="Jogos em 480i (Tekken 3 nas lutas) mostram dois campos tirados em instantes diferentes: onde algo se mexe aparece um 'fantasma' em pente em volta. Adaptativo: troca só as linhas em movimento (recomendado). Campo atual: sempre sem fantasma, mas com menos detalhe vertical. Tecer: como o console (mostra o fantasma).">Entrelaçado <select id="deint"><option value="1" selected>Adaptativo</option><option value="2">Campo atual (sem fantasma)</option><option value="0">Tecer (fiel ao console)</option></select></label> <span id="rinfo"></span></label>
+<label>Disco (.bin/.iso, ou .cue + todos os .bin das trilhas — selecione vários) <input type="file" id="disc" multiple></label>
+<label>Troca de disco em execução: <button id="lid" disabled>Abrir tampa</button> <span id="lidinfo"></span></label>
+<label>Memory Card 1 <input type="file" id="mc0"> <button id="mc0save" disabled>Baixar</button> <button id="mc0clear">Apagar guardado</button> <span id="mc0info"></span></label>
+<label>Memory Card 2 <input type="file" id="mc1"> <button id="mc1save" disabled>Baixar</button> <button id="mc1clear">Apagar guardado</button> <span id="mc1info"></span></label>
+<label><input type="checkbox" id="mcblank" checked> Criar cartões em branco nos slots sem arquivo</label>
+<label><input type="checkbox" id="side"> Sideload do EXE (alternativa; o boot normal pela BIOS já funciona)</label>
+<button id="start">Iniciar</button>
+<details open><summary>Save states</summary>
+<select id="slot"><option value="1">Slot 1</option></select> <button id="ssave">Salvar (F5)</button> <button id="sload">Carregar (F7)</button> <button id="sdel">Apagar</button>
+<button id="sexport">Exportar arquivo</button> <label style="display:inline">Importar <input type="file" id="simport"></label>
+</details>
+<details><summary>Controles</summary>
+Porta 1: <select id="ptype0"><option value="digital">Digital</option><option value="dualshock">DualShock (analógico + vibração)</option></select>
+Porta 2: <select id="ptype1"><option value="none">Nenhum</option><option value="digital">Digital</option><option value="dualshock">DualShock</option></select><br>
+<small id="padinfo"></small><br>
+Zona morta <input type="range" id="deadzone" min="0" max="60"> <label style="display:inline"><input type="checkbox" id="rumble" checked> vibração</label> <button id="mapreset">Restaurar padrão</button>
+<table id="map"></table>
+</details>
+<details id="dbg"><summary>Depurador</summary>
+<button id="dregs">Registradores</button> <button id="dstep">Passo</button> endereço (hex) <input id="dbp" size="10" placeholder="80010000"> <button id="drun">Rodar até breakpoint</button> <button id="dclr">Limpar breakpoints</button>
+<button id="ddump">Dump</button> <button id="dtrace">Ligar trace</button> <button id="dshowtrace">Ver trace</button> <button id="report" disabled>Baixar relatório</button>
+<pre id="dbgout" style="height:200px"></pre>
+</details>
+<pre id="log"></pre>
+<small>Teclas padrão: setas | Z=X(cruz) X=O A=□ S=△ Q/W=L1/R1 E/R=L2/R2 D/C=L3/R3 | Enter=Start Backspace=Select | P pausa, F5/F7 salvar/carregar estado, F9 analógico, F11 tela cheia, T turbo. Tudo remapeável em "Controles".</small><br>
+</aside>
+<!-- scripts clássicos: funcionam abrindo este arquivo direto (file://), sem servidor -->
+<script src="dist/ps1emu.js"></script>
+<script src="web/storage.js"></script>
+<script src="web/main.js"></script>
+<script src="web/ui.js"></script>
+<script>if("serviceWorker"in navigator&&/^https?:$/.test(location.protocol))addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));</script>
+</body></html>
